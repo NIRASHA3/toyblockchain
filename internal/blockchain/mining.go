@@ -85,6 +85,8 @@ func Mine(ctx context.Context, candidate Block, difficulty int, workers int) (Bl
 
 	select {
 	case block := <-resultCh:
+		// Stop the remaining workers immediately after the first valid nonce is found.
+		cancel()
 		<-doneCh
 		return block, MiningStats{Nonce: block.Nonce, Attempts: atomic.LoadUint64(&attempts), Duration: time.Since(start), Workers: workers}, nil
 	case <-ctx.Done():
