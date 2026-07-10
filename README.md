@@ -410,10 +410,11 @@ The hash input includes:
 
 1. block height
 2. Unix timestamp
-3. previous block hash
-4. nonce
-5. transaction count
-6. each transaction in order
+3. difficulty
+4. previous block hash
+5. nonce
+6. transaction count
+7. each transaction in order
 
 For each transaction, the hash input includes:
 
