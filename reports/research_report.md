@@ -18,7 +18,7 @@ The code is organised as a small Go module with a clear separation between comma
 The main domain types are:
 
 - `Transaction`: sender, recipient, integer amount, creation time, memo, and deterministic transaction ID.
-- `Block`: height, Unix timestamp, transaction list, previous block hash, nonce, and own hash.
+- `Block`: height, Unix timestamp, difficulty, transaction list, previous block hash, nonce, and own hash.
 - `State`: confirmed chain plus pending transaction pool.
 - `Balances`: derived account-balance map used when admitting transactions and validating the chain.
 
@@ -32,10 +32,11 @@ The block fields are written into the hash payload in this exact order:
 
 1. block height,
 2. Unix timestamp,
-3. previous block hash,
-4. nonce,
-5. transaction count,
-6. for each transaction in order: transaction index, transaction ID, sender, recipient, amount, creation timestamp, and memo.
+3. difficulty,
+4. previous block hash,
+5. nonce,
+6. transaction count,
+7. for each transaction in order: transaction index, transaction ID, sender, recipient, amount, creation timestamp, and memo.
 
 String values are length-prefixed before their contents are written. This prevents ambiguous serialisation cases, such as `ab` + `c` being indistinguishable from `a` + `bc` in a plain concatenated text stream.
 

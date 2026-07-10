@@ -389,10 +389,11 @@ The file `demo.json` will contain the chain and pending transaction pool:
     {
       "height": 0,
       "timestamp": 0,
+      "difficulty": 5,
       "transactions": [],
       "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
-      "nonce": 47296,
-      "hash": "00000ced59ade982305577d2c37a075a180e0b1e0c86566febff9bd2f4320a49"
+      "nonce": 2795095,
+      "hash": "0000066df5eeb807e089b751c013567c6909e3e1450129c395c7b024607f6ce0"
     }
   ],
   "pending": []
