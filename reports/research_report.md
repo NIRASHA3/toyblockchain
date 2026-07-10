@@ -105,8 +105,8 @@ Commands used:
 Before tampering:
 
 ```text
-mined block height=1 hash=0003405eafa524d3c23c8107b4ae15e91b256783e6ed0f62fa4678b09632b0d4 nonce=326 attempts=327 duration=2ms workers=1
-VALID: 2 blocks checked at difficulty 3
+mined block height=1 difficulty=3 hash=0003405eafa524d3c23c8107b4ae15e91b256783e6ed0f62fa4678b09632b0d4 nonce=326 attempts=327 duration=2ms workers=1
+VALID: 2 blocks checked
 ```
 
 After tampering:
