@@ -3,6 +3,7 @@ package blockchain
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 	"time"
 )
@@ -64,6 +65,36 @@ func TestRejectTransactionIDMismatch(t *testing.T) {
 	}
 }
 
+func TestRejectBalanceOverflowForFaucet(t *testing.T) {
+	balances := Balances{"alice": math.MaxInt64}
+	tx, err := NewFaucet("alice", 1, "overflow", time.Unix(100, 0))
+	if err != nil {
+		t.Fatalf("create faucet tx: %v", err)
+	}
+
+	if err := ApplyTransaction(balances, tx); !errors.Is(err, ErrBalanceOverflow) {
+		t.Fatalf("error = %v, want ErrBalanceOverflow", err)
+	}
+	if balances["alice"] != math.MaxInt64 {
+		t.Fatalf("balance changed after overflow rejection: got %d", balances["alice"])
+	}
+}
+
+func TestRejectBalanceOverflowForTransferRecipientWithoutDebitingSender(t *testing.T) {
+	balances := Balances{"alice": 100, "bob": math.MaxInt64 - 10}
+	tx, err := NewTransfer("alice", "bob", 11, "overflow", time.Unix(100, 0))
+	if err != nil {
+		t.Fatalf("create transfer tx: %v", err)
+	}
+
+	if err := ApplyTransaction(balances, tx); !errors.Is(err, ErrBalanceOverflow) {
+		t.Fatalf("error = %v, want ErrBalanceOverflow", err)
+	}
+	if balances["alice"] != 100 || balances["bob"] != math.MaxInt64-10 {
+		t.Fatalf("balances changed after overflow rejection: alice=%d bob=%d", balances["alice"], balances["bob"])
+	}
+}
+
 func TestPendingPoolPreventsOverspendAcrossPendingTransactions(t *testing.T) {
 	state := NewState()
 	cfg := Config{Difficulty: 1, MaxBlockTx: 5, Workers: 1}
@@ -75,8 +106,10 @@ func TestPendingPoolPreventsOverspendAcrossPendingTransactions(t *testing.T) {
 	if err := state.AddPending(seed); err != nil {
 		t.Fatalf("add seed pending: %v", err)
 	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+
 	if _, _, err := state.MinePending(ctx, cfg, time.Unix(200, 0)); err != nil {
 		t.Fatalf("mine seed: %v", err)
 	}
@@ -102,14 +135,14 @@ func TestPendingPoolPreventsOverspendAcrossPendingTransactions(t *testing.T) {
 }
 
 func TestValidateChainDetectsInvalidAmountInsideStoredBlock(t *testing.T) {
-	// Build a block whose hash and proof-of-work are correct but whose transaction is invalid.
-	// This proves validation checks ledger rules, not only hashes.
 	badTx := Transaction{From: FaucetAccount, To: "alice", Amount: 0, CreatedAt: time.Unix(100, 0).UnixNano()}
 	badTx.ID = badTx.ComputeID()
 
-	candidate := NewCandidateBlock(NewGenesisBlock(), []Transaction{badTx}, time.Unix(200, 0))
+	candidate := NewCandidateBlock(NewGenesisBlock(), []Transaction{badTx}, time.Unix(200, 0), 1)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+
 	mined, _, err := Mine(ctx, candidate, 1, 1)
 	if err != nil {
 		t.Fatalf("mine invalid block for validation test: %v", err)
@@ -120,6 +153,7 @@ func TestValidateChainDetectsInvalidAmountInsideStoredBlock(t *testing.T) {
 	if err == nil {
 		t.Fatal("chain with invalid transaction amount unexpectedly validated")
 	}
+
 	var validationErr *ValidationError
 	if !errors.As(err, &validationErr) {
 		t.Fatalf("error type = %T, want *ValidationError", err)
