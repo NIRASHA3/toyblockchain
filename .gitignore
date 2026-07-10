@@ -1,3 +1,4 @@
-toychain.exe
+/toychain
+/toychain.exe
 *.json
 *.tmp
