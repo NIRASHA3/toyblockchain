@@ -61,8 +61,6 @@ The validation function returns a custom validation error containing the offendi
 
 Ledger validation is performed by replaying transactions in chain order. Faucet transactions add funds to recipients. Normal transactions subtract from the sender and add to the recipient only after the sender's confirmed balance is checked. As a result, validation checks both chain integrity and ledger correctness.
 
-Validation treats the genesis block as canonical by comparing it against fixed height, timestamp, difficulty, previous hash, nonce, hash, and empty transaction list. This prevents a locally fabricated genesis block from being accepted as the root of the chain.
-
 ## 5. Go feature choices
 
 ### Standard library focus
