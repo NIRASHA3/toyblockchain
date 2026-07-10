@@ -114,6 +114,7 @@ The automated tests cover:
 - zero amount rejection
 - negative amount rejection
 - overspending rejection
+- balance overflow rejection
 - pending-pool overspending rejection
 - transaction ID validation
 - previous-hash-link validation
@@ -245,7 +246,7 @@ Validation checks:
 - block height sequence
 - stored hash equals recomputed hash
 - proof-of-work target
-- genesis previous hash
+- genesis block canonical fields
 - previous-hash links
 - timestamp ordering
 - transaction syntax
@@ -310,7 +311,7 @@ bob      40
 Expected validation result:
 
 ```text
-VALID: 3 blocks checked at difficulty 3
+VALID: 3 blocks checked
 ```
 
 ## Invalid Transaction Examples
@@ -332,6 +333,8 @@ Overspending is rejected:
 ```powershell
 .\toychain.exe -data e2e_chain.json -difficulty 3 tx -from alice -to bob -amount 150
 ```
+
+Balance overflow is rejected when a credit would exceed the `int64` limit.
 
 ## Tamper Detection Example
 
