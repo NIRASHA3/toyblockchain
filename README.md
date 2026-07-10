@@ -40,6 +40,7 @@ toyblockchain/
       main.go
       main_test.go
       cli_invalid_test.go
+      cli_coverage_test.go
   internal/
     blockchain/
       block.go
