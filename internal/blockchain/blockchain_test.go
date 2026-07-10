@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-func TestGenesisIsDeterministic(t *testing.T) {
+func TestGenesisIsDeterministicAndCanonical(t *testing.T) {
 	state := NewState()
 	if got, want := len(state.Chain), 1; got != want {
 		t.Fatalf("chain length = %d, want %d", got, want)
@@ -19,8 +19,14 @@ func TestGenesisIsDeterministic(t *testing.T) {
 	if genesis.PrevHash != GenesisPreviousHash {
 		t.Fatalf("genesis previous hash = %s, want %s", genesis.PrevHash, GenesisPreviousHash)
 	}
+	if genesis.Difficulty != MaxDifficulty {
+		t.Fatalf("genesis difficulty = %d, want %d", genesis.Difficulty, MaxDifficulty)
+	}
 	if got := genesis.ComputeHash(); got != genesis.Hash {
 		t.Fatalf("genesis hash recompute = %s, stored = %s", got, genesis.Hash)
+	}
+	if genesis.Hash != GenesisHash || genesis.Nonce != GenesisNonce {
+		t.Fatalf("genesis constants changed: hash=%s nonce=%d", genesis.Hash, genesis.Nonce)
 	}
 	if !MeetsDifficulty(genesis.Hash, MaxDifficulty) {
 		t.Fatalf("genesis hash %s does not satisfy max supported difficulty %d", genesis.Hash, MaxDifficulty)
@@ -32,11 +38,21 @@ func TestBlockHashingIsDeterministic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create faucet tx: %v", err)
 	}
-	block := Block{Height: 1, Timestamp: 200, Transactions: []Transaction{tx}, PrevHash: GenesisHash, Nonce: 42}
+	block := Block{Height: 1, Timestamp: 200, Difficulty: 2, Transactions: []Transaction{tx}, PrevHash: GenesisHash, Nonce: 42}
 	first := block.ComputeHash()
 	second := block.ComputeHash()
 	if first != second {
 		t.Fatalf("hashes differ: %s != %s", first, second)
+	}
+}
+
+func TestBlockHashIncludesDifficulty(t *testing.T) {
+	block := Block{Height: 1, Timestamp: 200, Difficulty: 1, PrevHash: GenesisHash, Nonce: 42}
+	original := block.ComputeHash()
+	block.Difficulty = 2
+	changed := block.ComputeHash()
+	if original == changed {
+		t.Fatal("block hash did not change after difficulty changed")
 	}
 }
 
@@ -45,14 +61,17 @@ func TestMinedBlockSatisfiesDifficulty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create faucet tx: %v", err)
 	}
-	candidate := NewCandidateBlock(NewGenesisBlock(), []Transaction{tx}, time.Unix(200, 0))
+	candidate := NewCandidateBlock(NewGenesisBlock(), []Transaction{tx}, time.Unix(200, 0), 2)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	mined, _, err := Mine(ctx, candidate, 2, 2)
 	if err != nil {
 		t.Fatalf("mine: %v", err)
 	}
-	if !MeetsDifficulty(mined.Hash, 2) {
+	if mined.Difficulty != 2 {
+		t.Fatalf("mined difficulty = %d, want 2", mined.Difficulty)
+	}
+	if !MeetsDifficulty(mined.Hash, mined.Difficulty) {
 		t.Fatalf("mined hash %s does not satisfy difficulty", mined.Hash)
 	}
 	if recomputed := mined.ComputeHash(); recomputed != mined.Hash {
@@ -63,7 +82,6 @@ func TestMinedBlockSatisfiesDifficulty(t *testing.T) {
 func TestHonestChainValidates(t *testing.T) {
 	state := NewState()
 	cfg := Config{Difficulty: 2, MaxBlockTx: 5, Workers: 2}
-
 	faucetTx, err := NewFaucet("alice", 100, "seed", time.Unix(100, 0))
 	if err != nil {
 		t.Fatalf("create faucet tx: %v", err)
@@ -76,7 +94,6 @@ func TestHonestChainValidates(t *testing.T) {
 	if _, _, err := state.MinePending(ctx, cfg, time.Unix(200, 0)); err != nil {
 		t.Fatalf("mine faucet block: %v", err)
 	}
-
 	transferTx, err := NewTransfer("alice", "bob", 40, "pay", time.Unix(300, 0))
 	if err != nil {
 		t.Fatalf("create transfer tx: %v", err)
@@ -87,7 +104,6 @@ func TestHonestChainValidates(t *testing.T) {
 	if _, _, err := state.MinePending(ctx, cfg, time.Unix(400, 0)); err != nil {
 		t.Fatalf("mine transfer block: %v", err)
 	}
-
 	if err := ValidateChain(state.Chain, cfg.Difficulty); err != nil {
 		t.Fatalf("valid chain rejected: %v", err)
 	}
@@ -108,7 +124,6 @@ func TestTamperingIsDetectedAtFirstBadBlock(t *testing.T) {
 	if _, _, err := state.MinePending(ctx, cfg, time.Unix(200, 0)); err != nil {
 		t.Fatalf("mine: %v", err)
 	}
-
 	state.Chain[1].Transactions[0].Amount = 999
 	err = ValidateChain(state.Chain, cfg.Difficulty)
 	if err == nil {
@@ -126,7 +141,6 @@ func TestTamperingIsDetectedAtFirstBadBlock(t *testing.T) {
 func TestOverspendingTransactionIsRejectedAndBalanceUnchanged(t *testing.T) {
 	state := NewState()
 	cfg := Config{Difficulty: 2, MaxBlockTx: 5, Workers: 2}
-
 	seed, err := NewFaucet("alice", 100, "seed", time.Unix(100, 0))
 	if err != nil {
 		t.Fatalf("create faucet tx: %v", err)
@@ -139,7 +153,6 @@ func TestOverspendingTransactionIsRejectedAndBalanceUnchanged(t *testing.T) {
 	if _, _, err := state.MinePending(ctx, cfg, time.Unix(200, 0)); err != nil {
 		t.Fatalf("mine seed: %v", err)
 	}
-
 	before, err := state.Balances()
 	if err != nil {
 		t.Fatalf("balances before: %v", err)

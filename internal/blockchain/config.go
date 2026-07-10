@@ -4,16 +4,17 @@ const (
 	// GenesisPreviousHash is the fixed previous-hash value required for the genesis block.
 	GenesisPreviousHash = "0000000000000000000000000000000000000000000000000000000000000000"
 
-	// The genesis nonce/hash were precomputed from the canonical block payload at height 0,
-	// timestamp 0, no transactions. This keeps genesis deterministic while still satisfying
-	// proof-of-work for all supported difficulties up to MaxDifficulty.
-	GenesisNonce uint64 = 47296
-	GenesisHash         = "00000ced59ade982305577d2c37a075a180e0b1e0c86566febff9bd2f4320a49"
+	// The genesis nonce/hash are precomputed from the canonical block payload at
+	// height 0, timestamp 0, difficulty MaxDifficulty, no transactions.
+	// Keeping these constants fixed makes the genesis block tamper-evident.
+	GenesisNonce uint64 = 2795095
+	GenesisHash         = "0000066df5eeb807e089b751c013567c6909e3e1450129c395c7b024607f6ce0"
 
 	FaucetAccount = "FAUCET"
 
 	DefaultDifficulty = 3
 	DefaultMaxBlockTx = 5
+	MinDifficulty     = 1
 	MaxDifficulty     = 5
 )
 
@@ -31,7 +32,7 @@ func DefaultConfig() Config {
 
 // Validate checks configuration bounds.
 func (c Config) Validate() error {
-	if c.Difficulty < 0 || c.Difficulty > MaxDifficulty {
+	if c.Difficulty < MinDifficulty || c.Difficulty > MaxDifficulty {
 		return ErrInvalidDifficulty
 	}
 	if c.MaxBlockTx <= 0 {

@@ -43,6 +43,7 @@ func (s *State) MinePending(ctx context.Context, cfg Config, now time.Time) (Blo
 	if len(s.Pending) == 0 {
 		return Block{}, MiningStats{}, ErrNoPendingTx
 	}
+
 	limit := cfg.MaxBlockTx
 	if len(s.Pending) < limit {
 		limit = len(s.Pending)
@@ -60,18 +61,21 @@ func (s *State) MinePending(ctx context.Context, cfg Config, now time.Time) (Blo
 		}
 	}
 
-	candidate := NewCandidateBlock(s.Chain[len(s.Chain)-1], batch, now)
+	candidate := NewCandidateBlock(s.Chain[len(s.Chain)-1], batch, now, cfg.Difficulty)
 	mined, stats, err := Mine(ctx, candidate, cfg.Difficulty, cfg.Workers)
 	if err != nil {
 		return Block{}, stats, err
 	}
+
 	s.Chain = append(s.Chain, mined)
 	s.Pending = append([]Transaction{}, s.Pending[limit:]...)
 	return mined, stats, nil
 }
 
 // Balances returns confirmed balances, excluding pending transactions.
-func (s State) Balances() (Balances, error) { return BalancesFromChain(s.Chain) }
+func (s State) Balances() (Balances, error) {
+	return BalancesFromChain(s.Chain)
+}
 
 // BalancesIncludingPending returns balances after confirmed and pending transactions.
 func (s State) BalancesIncludingPending() (Balances, error) {

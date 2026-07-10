@@ -50,8 +50,11 @@ func mineWorker(ctx context.Context, candidate Block, difficulty int, workerID i
 // It splits nonce search across goroutines, uses context cancellation for timeouts,
 // and returns the first valid nonce found.
 func Mine(ctx context.Context, candidate Block, difficulty int, workers int) (Block, MiningStats, error) {
-	if difficulty < 0 || difficulty > MaxDifficulty {
-		return Block{}, MiningStats{}, fmt.Errorf("%w: got %d, supported range is 0..%d", ErrInvalidDifficulty, difficulty, MaxDifficulty)
+	if difficulty < MinDifficulty || difficulty > MaxDifficulty {
+		return Block{}, MiningStats{}, fmt.Errorf("%w: got %d, supported range is %d..%d", ErrInvalidDifficulty, difficulty, MinDifficulty, MaxDifficulty)
+	}
+	if candidate.Difficulty != difficulty {
+		return Block{}, MiningStats{}, fmt.Errorf("%w: candidate difficulty %d does not match mining difficulty %d", ErrInvalidDifficulty, candidate.Difficulty, difficulty)
 	}
 	if workers <= 0 {
 		workers = runtime.NumCPU()
@@ -85,7 +88,6 @@ func Mine(ctx context.Context, candidate Block, difficulty int, workers int) (Bl
 
 	select {
 	case block := <-resultCh:
-		// Stop the remaining workers immediately after the first valid nonce is found.
 		cancel()
 		<-doneCh
 		return block, MiningStats{Nonce: block.Nonce, Attempts: atomic.LoadUint64(&attempts), Duration: time.Since(start), Workers: workers}, nil

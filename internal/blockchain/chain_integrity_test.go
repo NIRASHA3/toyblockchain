@@ -39,7 +39,7 @@ func buildTwoBlockTestChain(t *testing.T) State {
 }
 
 func TestBlockHashIncludesPreviousHash(t *testing.T) {
-	block := Block{Height: 1, Timestamp: 100, PrevHash: GenesisHash, Nonce: 42}
+	block := Block{Height: 1, Timestamp: 100, Difficulty: 1, PrevHash: GenesisHash, Nonce: 42}
 	original := block.ComputeHash()
 	block.PrevHash = GenesisPreviousHash
 	changed := block.ComputeHash()
@@ -51,15 +51,24 @@ func TestBlockHashIncludesPreviousHash(t *testing.T) {
 func TestValidateChainDetectsPreviousHashLinkMismatch(t *testing.T) {
 	state := buildTwoBlockTestChain(t)
 
-	// Change block 2 so its stored hash matches its modified contents, but its PrevHash
-	// no longer points to block 1. Difficulty 0 is used here to isolate the link check.
 	state.Chain[2].PrevHash = state.Chain[0].Hash
-	state.Chain[2].Hash = state.Chain[2].ComputeHash()
+	candidate := state.Chain[2]
+	candidate.Hash = ""
 
-	err := ValidateChain(state.Chain, 0)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	mined, _, err := Mine(ctx, candidate, candidate.Difficulty, 1)
+	if err != nil {
+		t.Fatalf("re-mine broken-link block: %v", err)
+	}
+	state.Chain[2] = mined
+
+	err = ValidateChain(state.Chain, 1)
 	if err == nil {
 		t.Fatal("chain with broken previous-hash link unexpectedly validated")
 	}
+
 	var validationErr *ValidationError
 	if !errors.As(err, &validationErr) {
 		t.Fatalf("error type = %T, want *ValidationError", err)
@@ -77,12 +86,46 @@ func TestValidateChainDetectsStoredHashMismatch(t *testing.T) {
 	if err == nil {
 		t.Fatal("chain with stored hash mismatch unexpectedly validated")
 	}
+
 	var validationErr *ValidationError
 	if !errors.As(err, &validationErr) {
 		t.Fatalf("error type = %T, want *ValidationError", err)
 	}
 	if validationErr.Height != 1 || validationErr.Check != "hash" {
 		t.Fatalf("validation error = height %d check %q, want height 1 hash", validationErr.Height, validationErr.Check)
+	}
+}
+
+func TestValidateChainDetectsFakeGenesisBlock(t *testing.T) {
+	fakeGenesis := NewGenesisBlock()
+	fakeGenesis.Nonce++
+	fakeGenesis.Hash = fakeGenesis.ComputeHash()
+
+	err := ValidateChain([]Block{fakeGenesis}, 1)
+	if err == nil {
+		t.Fatal("fake genesis block unexpectedly validated")
+	}
+
+	var validationErr *ValidationError
+	if !errors.As(err, &validationErr) {
+		t.Fatalf("error type = %T, want *ValidationError", err)
+	}
+	if validationErr.Height != 0 || validationErr.Check != "genesis" {
+		t.Fatalf("validation error = height %d check %q, want height 0 genesis", validationErr.Height, validationErr.Check)
+	}
+	if !errors.Is(err, ErrInvalidGenesis) {
+		t.Fatalf("error = %v, want ErrInvalidGenesis", err)
+	}
+}
+
+func TestValidateChainUsesStoredDifficultyPerBlock(t *testing.T) {
+	state := buildTwoBlockTestChain(t)
+	if state.Chain[1].Difficulty != 1 || state.Chain[2].Difficulty != 1 {
+		t.Fatalf("test chain did not store difficulty 1")
+	}
+
+	if err := ValidateChain(state.Chain, 5); err != nil {
+		t.Fatalf("valid chain rejected when fallback difficulty changed: %v", err)
 	}
 }
 
@@ -93,15 +136,20 @@ func TestSaveLoadStateJSONRoundTrip(t *testing.T) {
 	if err := SaveState(path, state); err != nil {
 		t.Fatalf("save state: %v", err)
 	}
+
 	loaded, err := LoadState(path)
 	if err != nil {
 		t.Fatalf("load state: %v", err)
 	}
+
 	if len(loaded.Chain) != len(state.Chain) {
 		t.Fatalf("loaded chain length = %d, want %d", len(loaded.Chain), len(state.Chain))
 	}
 	if loaded.Chain[2].Hash != state.Chain[2].Hash {
 		t.Fatalf("loaded tip hash = %s, want %s", loaded.Chain[2].Hash, state.Chain[2].Hash)
+	}
+	if loaded.Chain[2].Difficulty != state.Chain[2].Difficulty {
+		t.Fatalf("loaded tip difficulty = %d, want %d", loaded.Chain[2].Difficulty, state.Chain[2].Difficulty)
 	}
 	if err := ValidateChain(loaded.Chain, 1); err != nil {
 		t.Fatalf("loaded chain failed validation: %v", err)
