@@ -41,6 +41,8 @@ String values are length-prefixed before their contents are written. This preven
 
 This scheme gives deterministic hashing: the same block fields and nonce always produce the same SHA-256 hash, and a change to any hashed field produces a different recomputed hash with overwhelming probability.
 
+The block difficulty is also part of the canonical hash payload. This prevents someone from lowering the difficulty value in stored JSON without changing the block hash.
+
 ## 4. Validation strategy
 
 Validation scans the chain from the genesis block to the latest block and stops at the first detected error. For each block, it checks:
@@ -48,7 +50,7 @@ Validation scans the chain from the genesis block to the latest block and stops 
 - the block height matches its position in the chain,
 - the stored hash matches a recomputation of the block hash,
 - the hash satisfies the configured proof-of-work target,
-- the genesis block uses the fixed all-zero previous hash,
+- validation treats the genesis block as canonical by comparing it against fixed height, timestamp, difficulty, previous hash, nonce, hash, and empty transaction list,
 - every non-genesis block points to the previous block's stored hash,
 - timestamps do not move backwards,
 - every transaction is syntactically valid,
@@ -58,6 +60,8 @@ Validation scans the chain from the genesis block to the latest block and stops 
 The validation function returns a custom validation error containing the offending block height and the failed check. This makes failures easier to diagnose than a generic true/false result.
 
 Ledger validation is performed by replaying transactions in chain order. Faucet transactions add funds to recipients. Normal transactions subtract from the sender and add to the recipient only after the sender's confirmed balance is checked. As a result, validation checks both chain integrity and ledger correctness.
+
+Validation treats the genesis block as canonical by comparing it against fixed height, timestamp, difficulty, previous hash, nonce, hash, and empty transaction list. This prevents a locally fabricated genesis block from being accepted as the root of the chain.
 
 ## 5. Go feature choices
 
