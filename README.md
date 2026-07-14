@@ -1,6 +1,6 @@
 # Toy Blockchain and Ledger Simulator
 
-A pure-Go command-line toy blockchain and ledger simulator that demonstrates deterministic block hashing, Merkle-root-based block headers, faucet-funded transactions, wallet-based signed transfers, proof-of-work mining, full-chain validation, tamper detection, encrypted wallet storage, JSON persistence, and automated tests.
+A pure-Go command-line toy blockchain and ledger simulator that demonstrates deterministic block hashing, Merkle-root-based block headers, faucet-funded transactions, wallet-based signed transfers, read-only REST API endpoints, proof-of-work mining, full-chain validation, tamper detection, encrypted wallet storage, JSON persistence, and automated tests.
 
 This project is intentionally local and educational. It does not connect to any external blockchain network, peer node, RPC endpoint, or third-party blockchain SDK.
 
@@ -28,7 +28,8 @@ This project is intentionally local and educational. It does not connect to any 
 - Balance overflow protection
 - JSON file persistence
 - Command-line interface
-- Unit tests for core blockchain and wallet behaviour
+- Read-only REST API for chain exploration
+- Unit tests for core blockchain, wallet, Merkle, CLI, and API behaviour
 
 ## Requirements
 
@@ -49,8 +50,10 @@ toyblockchain/
   cmd/
     toychain/
       main.go
+      server.go
       main_test.go
       cli_invalid_test.go
+      server_test.go
   internal/
     blockchain/
       block.go
@@ -112,7 +115,7 @@ go vet ./...
 go build -o toychain.exe ./cmd/toychain
 ```
 
-The automated tests cover deterministic hashing, canonical genesis validation, Merkle root calculation, Merkle-root tamper detection, Merkle proof generation/verification, proof-of-work target checks, signed transaction validation, wallet encryption/decryption, wrong-passphrase rejection, nonce validation, duplicate transaction rejection, invalid amount rejection, overspending rejection, pending-pool overspending rejection, previous-hash-link validation, JSON persistence, CLI error handling, and tamper detection.
+The automated tests cover deterministic hashing, canonical genesis validation, Merkle root calculation, Merkle-root tamper detection, Merkle proof generation/verification, proof-of-work target checks, signed transaction validation, wallet encryption/decryption, wrong-passphrase rejection, nonce validation, duplicate transaction rejection, invalid amount rejection, overspending rejection, pending-pool overspending rejection, previous-hash-link validation, JSON persistence, CLI error handling, read-only REST API endpoints, and tamper detection.
 
 ## Command-Line Usage
 
@@ -277,6 +280,42 @@ Expected validation result:
 VALID: 3 blocks checked
 ```
 
+## Read-only REST API
+
+Phase 3A adds a local read-only HTTP API using Go's standard `net/http` package. The API is useful for inspecting the blockchain like a small blockchain explorer. It does not accept wallet passphrases and it does not create transactions or mine blocks.
+
+Start the server:
+
+```powershell
+.\toychain.exe -data demo.json -difficulty 3 serve -addr :8080
+```
+
+Available read-only endpoints:
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `GET` | `/health` | Check server status |
+| `GET` | `/chain` | Return chain metadata, blocks, and pending transactions |
+| `GET` | `/blocks` | Return all blocks |
+| `GET` | `/blocks/{height}` | Return one block by height |
+| `GET` | `/balances` | Return confirmed balances |
+| `GET` | `/balances?pending=true` | Return balances including pending transactions |
+| `GET` | `/transactions/{id}` | Find a confirmed or pending transaction by ID |
+| `GET` | `/merkle-proof?height=2&tx=0` | Generate and verify a Merkle proof |
+| `GET` | `/validate` | Validate the chain and return JSON result |
+
+PowerShell examples:
+
+```powershell
+Invoke-RestMethod http://localhost:8080/health
+Invoke-RestMethod http://localhost:8080/blocks/2
+Invoke-RestMethod http://localhost:8080/balances
+Invoke-RestMethod "http://localhost:8080/merkle-proof?height=2&tx=0"
+Invoke-RestMethod http://localhost:8080/validate
+```
+
+The API intentionally does not receive wallet passphrases. Future write endpoints should accept already-signed transactions rather than asking the server to unlock a wallet.
+
 ## Invalid Transaction Examples
 
 Zero amount is rejected:
@@ -380,6 +419,12 @@ Balances are not stored as the source of truth. They are calculated by replaying
 
 Validation fails fast and reports the first offending block. It checks canonical genesis, height sequence, stored Merkle root, stored hash, recomputed hash, proof-of-work, previous-hash links, timestamps, transaction syntax, transaction IDs, signatures, nonces, duplicate IDs, sufficient balances, and overflow rules.
 
+### REST API Design
+
+The REST API is read-only in this phase. It loads the JSON state file, validates the chain for normal read endpoints, and returns JSON responses. Invalid paths, unsupported methods, invalid block heights, invalid transaction IDs, and invalid Merkle proof indexes return structured JSON error responses.
+
+This design keeps private key handling on the client side. The server does not receive wallet paths or wallet passphrases. This is closer to a standard blockchain model, where clients sign transactions locally and nodes only verify and accept already-signed transactions.
+
 ## Known Constraints and Future Improvements
 
 This is a local educational blockchain simulator, not production money software.
@@ -399,7 +444,7 @@ Useful future improvements:
 
 1. Use interactive hidden passphrase input.
 2. Replace the educational KDF with Argon2id or scrypt.
-3. Add a REST API for block and transaction lookup.
+3. Add write API support that accepts already-signed transactions.
 4. Add peer-to-peer node communication.
 5. Add proof-of-authority or fork-resolution logic.
 6. Add difficulty retargeting.

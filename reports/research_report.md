@@ -2,15 +2,15 @@
 
 ## 1. Project scope and problem analysis
 
-This project implements a local command-line blockchain and ledger simulator in pure Go. The goal is to demonstrate the internal behaviour of a small blockchain, including deterministic block hashing, proof-of-work mining, ledger replay, tamper detection, JSON persistence, transaction validation, wallet-based signatures, and Merkle-root-based transaction commitment.
+This project implements a local command-line blockchain and ledger simulator in pure Go. The goal is to demonstrate the internal behaviour of a small blockchain, including deterministic block hashing, proof-of-work mining, ledger replay, tamper detection, JSON persistence, transaction validation, wallet-based signatures, Merkle-root-based transaction commitment, and read-only REST API access.
 
-The latest improvement adds a Merkle root to every block. Earlier versions hashed every transaction directly inside the block hash payload. The updated version hashes transactions into a Merkle tree and stores the resulting Merkle root in the block header. This is closer to how production blockchains commit to transaction lists. The second part of the phase adds Merkle proof generation and verification so a selected transaction can be proven against the stored block root.
+The latest improvement adds a read-only REST API for blockchain exploration. Earlier versions were CLI-only. The updated version can expose chain data, blocks, balances, transactions, validation status, and Merkle proofs over local HTTP endpoints without accepting wallet passphrases or changing blockchain state.
 
 ## 2. Architecture
 
 The project is organised as a small Go module:
 
-- `cmd/toychain`: command-line interface and output formatting.
+- `cmd/toychain`: command-line interface, read-only HTTP API, and output formatting.
 - `internal/blockchain`: domain logic for blocks, transactions, wallets, Merkle roots, mining, validation, balances, and persistence.
 
 The main types are:
@@ -21,6 +21,7 @@ The main types are:
 - `State`: confirmed chain plus pending transaction pool.
 - `LedgerState`: replayed balances, sender nonces, and seen transaction IDs.
 - `MerkleProofStep`: one sibling hash and its left/right position in a Merkle proof path.
+- `apiServer`: local read-only HTTP server for chain exploration endpoints.
 
 ## 3. Hashing scheme
 
@@ -82,7 +83,30 @@ Validation scans the chain from block 0 to the tip and fails fast on the first o
 
 Because validation recomputes the Merkle root and replays the ledger, it detects both structural tampering and business-rule violations.
 
-## 7. Go feature choices
+## 7. Read-only REST API design
+
+Phase 3A adds a local HTTP server using the Go standard library `net/http` package. The server is started with:
+
+```bash
+./toychain -data demo.json -difficulty 3 serve -addr :8080
+```
+
+The read-only endpoints are:
+
+- `GET /health`,
+- `GET /chain`,
+- `GET /blocks`,
+- `GET /blocks/{height}`,
+- `GET /balances`,
+- `GET /transactions/{id}`,
+- `GET /merkle-proof?height=2&tx=0`,
+- `GET /validate`.
+
+Normal read endpoints load the JSON state and validate the chain before returning data. This prevents the API from presenting hand-edited invalid chain data as if it were valid. The `/validate` endpoint is slightly different because it must be able to report invalid chains instead of refusing to load them silently.
+
+The API is intentionally read-only. It does not receive wallet file paths, private keys, or wallet passphrases. This is a better standard design because wallet secrets should remain on the client side. Future write endpoints should accept already-signed transactions and verify them server-side rather than asking the server to decrypt a wallet.
+
+## 8. Go feature choices
 
 ### Interfaces
 
@@ -100,7 +124,7 @@ Mining is the naturally concurrent part of the program. The nonce space is split
 
 Errors are returned rather than printed in the domain package. Lower-level errors are wrapped with `%w`, and chain validation returns a custom `ValidationError` containing the block height and failed check.
 
-## 8. Experiment 1: tamper-evidence
+## 9. Experiment 1: tamper-evidence
 
 ### Setup
 
@@ -135,7 +159,7 @@ INVALID: block 1 failed merkle root check: stored merkle root does not match rec
 
 The transaction amount is part of the transaction hash leaf. Changing the amount changes the transaction hash, which changes the recomputed Merkle root. The stored Merkle root remains the old value, so validation fails at the Merkle root check before the block hash check.
 
-## 9. Experiment 2: difficulty versus effort
+## 10. Experiment 2: difficulty versus effort
 
 The proof-of-work target is a required number of leading zero hexadecimal digits. One hexadecimal digit has 16 possible values, so adding one required leading zero multiplies the expected search space by about 16. Individual runs can vary because hashing is probabilistic.
 
@@ -151,7 +175,7 @@ Example single-worker mining trend:
 
 The trend is not linear in the difficulty number. The expected work grows exponentially because each extra zero hex digit adds another 1-in-16 condition.
 
-## 10. Experiment 3: Merkle proof generation
+## 11. Experiment 3: Merkle proof generation
 
 ### Setup
 
@@ -186,7 +210,35 @@ The command prints JSON similar to:
 
 The proof contains only the sibling hashes needed to reconstruct the Merkle root for the selected transaction. If the transaction hash, proof path, or Merkle root is changed, verification returns false. This demonstrates how block membership can be checked without re-hashing every transaction in the block.
 
-## 11. Discussion
+## 12. Experiment 4: read-only REST API
+
+### Setup
+
+After creating and mining a demo chain, the API server was started:
+
+```bash
+./toychain -data demo.json -difficulty 3 serve -addr :8080
+```
+
+Example API checks:
+
+```bash
+curl http://localhost:8080/health
+curl http://localhost:8080/blocks/2
+curl http://localhost:8080/balances
+curl "http://localhost:8080/merkle-proof?height=2&tx=0"
+curl http://localhost:8080/validate
+```
+
+### Expected result
+
+The server returns JSON responses. `/validate` returns `valid: true` for a correct chain, `/blocks/{height}` returns block details including the Merkle root, `/balances` returns replayed confirmed balances, and `/merkle-proof` returns a proof with `valid: true`.
+
+### Explanation
+
+This demonstrates how the CLI blockchain can be exposed through a backend-style interface without changing the underlying chain state. It also preserves the safer wallet model because the API does not receive passphrases or private keys.
+
+## 12. Discussion
 
 ### Why previous-hash links make old tampering impractical in real chains
 
@@ -206,12 +258,13 @@ Another simple private-network alternative is proof-of-authority, where known au
 
 The project now includes a Merkle root and a proof command, but it still stores the full transactions inside each local block file.
 
-## 12. Constraints and future improvements
+## 13. Constraints and future improvements
 
 This implementation is suitable for a local CLI blockchain learning project. It is not production money software.
 
 Current constraints:
 
+- no write REST API endpoints yet,
 - no peer-to-peer network,
 - no distributed consensus,
 - no fork choice rule,
@@ -224,7 +277,7 @@ Future improvements:
 
 1. Use interactive hidden passphrase input.
 2. Replace the educational KDF with Argon2id or scrypt.
-3. Add a REST API for block and transaction lookup.
+3. Add write API support that accepts already-signed transactions.
 4. Add peer-to-peer node communication.
 5. Add proof-of-authority or fork-resolution logic.
 6. Add difficulty retargeting.
@@ -235,5 +288,6 @@ Future improvements:
 - Go documentation: `crypto/aes` and `crypto/cipher` packages.
 - Go documentation: `crypto/sha256` package.
 - Go documentation: `context` package.
+- Go documentation: `net/http` package.
 - Satoshi Nakamoto, "Bitcoin: A Peer-to-Peer Electronic Cash System".
 - Ethereum documentation: Proof-of-stake.

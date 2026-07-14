@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"sort"
 	"strings"
@@ -89,6 +90,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return cmdPending(commandArgs, cfg, bcfg, stdout, stderr)
 	case "merkle-proof":
 		return cmdMerkleProof(commandArgs, cfg, bcfg, stdout, stderr)
+	case "serve":
+		return cmdServe(commandArgs, cfg, bcfg, stdout, stderr)
 	case "tamper":
 		return cmdTamper(commandArgs, cfg, bcfg, stdout, stderr)
 	default:
@@ -393,6 +396,22 @@ func cmdMerkleProof(args []string, cfg cliConfig, bcfg blockchain.Config, stdout
 	return encoder.Encode(result)
 }
 
+func cmdServe(args []string, cfg cliConfig, bcfg blockchain.Config, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	addr := fs.String("addr", ":8080", "HTTP server address")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	handler := newAPIServer(cfg.dataPath, bcfg)
+	server := &http.Server{Addr: *addr, Handler: handler}
+	fmt.Fprintf(stdout, "serving read-only API on %s using state %s\n", *addr, cfg.dataPath)
+	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return nil
+}
+
 func cmdTamper(args []string, cfg cliConfig, bcfg blockchain.Config, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("tamper", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -458,6 +477,7 @@ Commands:
   balances [-pending]                         show account balances
   pending                                     list pending transactions
   merkle-proof -height N -tx I                print a transaction Merkle proof
+  serve [-addr :8080]                         start read-only REST API server
   tamper -height N -tx I -amount N            deliberately alter stored data for demo`))
 }
 
