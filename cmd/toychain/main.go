@@ -78,6 +78,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return cmdFaucet(commandArgs, cfg, bcfg, stdout, stderr)
 	case "tx":
 		return cmdTransfer(commandArgs, cfg, bcfg, stdout, stderr)
+	case "tx-sign":
+		return cmdSignTransaction(commandArgs, cfg, bcfg, stdout, stderr)
 	case "mine":
 		return cmdMine(commandArgs, cfg, bcfg, stdout, stderr)
 	case "print":
@@ -212,15 +214,7 @@ func cmdTransfer(args []string, cfg cliConfig, bcfg blockchain.Config, stdout, s
 	if err != nil {
 		return err
 	}
-	wallet, err := blockchain.LoadEncryptedWallet(*walletPath, *passphrase)
-	if err != nil {
-		return err
-	}
-	nonce, err := state.NextNonce(wallet.Address)
-	if err != nil {
-		return err
-	}
-	tx, err := blockchain.NewSignedTransfer(wallet, *to, *amount, nonce, *memo, time.Now())
+	tx, err := signTransactionFromWallet(state, *walletPath, *passphrase, *to, *amount, *memo, time.Now())
 	if err != nil {
 		return err
 	}
@@ -232,6 +226,54 @@ func cmdTransfer(args []string, cfg cliConfig, bcfg blockchain.Config, stdout, s
 	}
 	fmt.Fprintf(stdout, "added signed pending transaction %s: %s -> %s amount=%d nonce=%d\n", short(tx.ID), tx.From, tx.To, tx.Amount, tx.Nonce)
 	return nil
+}
+
+func cmdSignTransaction(args []string, cfg cliConfig, bcfg blockchain.Config, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("tx-sign", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	walletPath := fs.String("wallet", "", "encrypted sender wallet file")
+	passphrase := fs.String("passphrase", "", "wallet passphrase")
+	to := fs.String("to", "", "recipient wallet address")
+	amount := fs.Int64("amount", 0, "amount to send")
+	memo := fs.String("memo", "", "transaction memo")
+	outPath := fs.String("out", "", "output signed transaction JSON file; omit or use - for stdout")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	state, err := loadValidState(cfg, bcfg)
+	if err != nil {
+		return err
+	}
+	tx, err := signTransactionFromWallet(state, *walletPath, *passphrase, *to, *amount, *memo, time.Now())
+	if err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(tx, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	if *outPath == "" || *outPath == "-" {
+		_, err = stdout.Write(data)
+		return err
+	}
+	if err := os.WriteFile(*outPath, data, 0o600); err != nil {
+		return fmt.Errorf("write signed transaction %q: %w", *outPath, err)
+	}
+	fmt.Fprintf(stdout, "wrote signed transaction %s to %s\n", short(tx.ID), *outPath)
+	return nil
+}
+
+func signTransactionFromWallet(state blockchain.State, walletPath string, passphrase string, to string, amount int64, memo string, now time.Time) (blockchain.Transaction, error) {
+	wallet, err := blockchain.LoadEncryptedWallet(walletPath, passphrase)
+	if err != nil {
+		return blockchain.Transaction{}, err
+	}
+	nonce, err := state.NextNonce(wallet.Address)
+	if err != nil {
+		return blockchain.Transaction{}, err
+	}
+	return blockchain.NewSignedTransfer(wallet, to, amount, nonce, memo, now)
 }
 
 func cmdMine(args []string, cfg cliConfig, bcfg blockchain.Config, stdout, stderr io.Writer) error {
@@ -405,7 +447,7 @@ func cmdServe(args []string, cfg cliConfig, bcfg blockchain.Config, stdout, stde
 	}
 	handler := newAPIServer(cfg.dataPath, bcfg)
 	server := &http.Server{Addr: *addr, Handler: handler}
-	fmt.Fprintf(stdout, "serving read-only API on %s using state %s\n", *addr, cfg.dataPath)
+	fmt.Fprintf(stdout, "serving REST API on %s using state %s\n", *addr, cfg.dataPath)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
@@ -471,13 +513,15 @@ Commands:
   faucet -to ADDRESS -amount N                add funding transaction to pending pool
   tx -wallet FILE -passphrase PASS -to ADDRESS -amount N
                                              add signed transfer to pending pool
+  tx-sign -wallet FILE -passphrase PASS -to ADDRESS -amount N [-out FILE]
+                                             write signed transaction JSON without submitting
   mine                                        mine pending transactions into a block
   print                                       print readable chain
   validate                                    validate chain integrity
   balances [-pending]                         show account balances
   pending                                     list pending transactions
   merkle-proof -height N -tx I                print a transaction Merkle proof
-  serve [-addr :8080]                         start read-only REST API server
+  serve [-addr :8080]                         start REST API server
   tamper -height N -tx I -amount N            deliberately alter stored data for demo`))
 }
 

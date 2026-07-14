@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"toyblockchain/internal/blockchain"
 )
@@ -20,9 +22,10 @@ type apiErrorResponse struct {
 }
 
 type healthResponse struct {
-	Status   string `json:"status"`
-	Service  string `json:"service"`
-	ReadOnly bool   `json:"read_only"`
+	Status       string `json:"status"`
+	Service      string `json:"service"`
+	ReadOnly     bool   `json:"read_only"`
+	WriteEnabled bool   `json:"write_enabled"`
 }
 
 type chainResponse struct {
@@ -66,6 +69,28 @@ type merkleProofResponse struct {
 	Valid            bool                         `json:"valid"`
 }
 
+type faucetRequest struct {
+	To     string `json:"to"`
+	Amount int64  `json:"amount"`
+	Memo   string `json:"memo"`
+}
+
+type transactionSubmitResponse struct {
+	Status       string                 `json:"status"`
+	Transaction  blockchain.Transaction `json:"transaction"`
+	PendingCount int                    `json:"pending_count"`
+}
+
+type mineResponse struct {
+	Status       string           `json:"status"`
+	Block        blockchain.Block `json:"block"`
+	Nonce        uint64           `json:"nonce"`
+	Attempts     uint64           `json:"attempts"`
+	Duration     string           `json:"duration"`
+	Workers      int              `json:"workers"`
+	PendingCount int              `json:"pending_count"`
+}
+
 func newAPIServer(dataPath string, cfg blockchain.Config) http.Handler {
 	s := &apiServer{dataPath: dataPath, cfg: cfg}
 	mux := http.NewServeMux()
@@ -74,7 +99,10 @@ func newAPIServer(dataPath string, cfg blockchain.Config) http.Handler {
 	mux.HandleFunc("/blocks", s.handleBlocks)
 	mux.HandleFunc("/blocks/", s.handleBlockByHeight)
 	mux.HandleFunc("/balances", s.handleBalances)
+	mux.HandleFunc("/transactions", s.handleSubmitTransaction)
 	mux.HandleFunc("/transactions/", s.handleTransactionByID)
+	mux.HandleFunc("/faucet", s.handleFaucet)
+	mux.HandleFunc("/mine", s.handleMine)
 	mux.HandleFunc("/merkle-proof", s.handleMerkleProof)
 	mux.HandleFunc("/validate", s.handleValidate)
 	return mux
@@ -84,7 +112,7 @@ func (s *apiServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if !requireMethod(w, r, http.MethodGet) {
 		return
 	}
-	writeJSON(w, http.StatusOK, healthResponse{Status: "ok", Service: "toychain", ReadOnly: true})
+	writeJSON(w, http.StatusOK, healthResponse{Status: "ok", Service: "toychain", ReadOnly: false, WriteEnabled: true})
 }
 
 func (s *apiServer) handleChain(w http.ResponseWriter, r *http.Request) {
@@ -179,6 +207,104 @@ func (s *apiServer) handleTransactionByID(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeError(w, http.StatusNotFound, fmt.Sprintf("transaction %q not found", txID))
+}
+
+func (s *apiServer) handleSubmitTransaction(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	var tx blockchain.Transaction
+	if err := decodeJSONBody(w, r, &tx); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if tx.IsFaucet() {
+		writeError(w, http.StatusBadRequest, "use POST /faucet for faucet transactions")
+		return
+	}
+	state, ok := s.loadValidStateForAPI(w)
+	if !ok {
+		return
+	}
+	if err := state.AddPending(tx); err != nil {
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	if err := blockchain.SaveState(s.dataPath, state); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, transactionSubmitResponse{Status: "accepted", Transaction: tx, PendingCount: len(state.Pending)})
+}
+
+func (s *apiServer) handleFaucet(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	var req faucetRequest
+	if err := decodeJSONBody(w, r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	state, ok := s.loadValidStateForAPI(w)
+	if !ok {
+		return
+	}
+	memo := req.Memo
+	if strings.TrimSpace(memo) == "" {
+		memo = "faucet funding"
+	}
+	tx, err := blockchain.NewFaucet(req.To, req.Amount, memo, time.Now())
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := state.AddPending(tx); err != nil {
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	if err := blockchain.SaveState(s.dataPath, state); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, transactionSubmitResponse{Status: "accepted", Transaction: tx, PendingCount: len(state.Pending)})
+}
+
+func (s *apiServer) handleMine(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	if r.Body != nil && r.ContentLength != 0 {
+		var ignored map[string]any
+		if err := decodeJSONBody(w, r, &ignored); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	state, ok := s.loadValidStateForAPI(w)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	block, stats, err := state.MinePending(ctx, s.cfg, time.Now())
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	if err := blockchain.SaveState(s.dataPath, state); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, mineResponse{
+		Status:       "mined",
+		Block:        block,
+		Nonce:        stats.Nonce,
+		Attempts:     stats.Attempts,
+		Duration:     stats.Duration.Round(time.Millisecond).String(),
+		Workers:      stats.Workers,
+		PendingCount: len(state.Pending),
+	})
 }
 
 func (s *apiServer) handleMerkleProof(w http.ResponseWriter, r *http.Request) {
@@ -296,6 +422,19 @@ func requireMethod(w http.ResponseWriter, r *http.Request, method string) bool {
 	w.Header().Set("Allow", method)
 	writeError(w, http.StatusMethodNotAllowed, fmt.Sprintf("method %s not allowed", r.Method))
 	return false
+}
+
+func decodeJSONBody(w http.ResponseWriter, r *http.Request, value any) error {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(value); err != nil {
+		return fmt.Errorf("decode JSON body: %w", err)
+	}
+	if decoder.More() {
+		return fmt.Errorf("decode JSON body: unexpected extra JSON data")
+	}
+	return nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

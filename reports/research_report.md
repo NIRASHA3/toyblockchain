@@ -2,15 +2,15 @@
 
 ## 1. Project scope and problem analysis
 
-This project implements a local command-line blockchain and ledger simulator in pure Go. The goal is to demonstrate the internal behaviour of a small blockchain, including deterministic block hashing, proof-of-work mining, ledger replay, tamper detection, JSON persistence, transaction validation, wallet-based signatures, Merkle-root-based transaction commitment, and read-only REST API access.
+This project implements a local command-line blockchain and ledger simulator in pure Go. The goal is to demonstrate the internal behaviour of a small blockchain, including deterministic block hashing, proof-of-work mining, ledger replay, tamper detection, JSON persistence, transaction validation, wallet-based signatures, Merkle-root-based transaction commitment, and REST API access with signed transaction submission.
 
-The latest improvement adds a read-only REST API for blockchain exploration. Earlier versions were CLI-only. The updated version can expose chain data, blocks, balances, transactions, validation status, and Merkle proofs over local HTTP endpoints without accepting wallet passphrases or changing blockchain state.
+The latest improvement extends the REST API with safe write endpoints. Earlier Phase 3 work exposed read-only blockchain explorer endpoints. The updated version can also accept faucet transactions, accept already-signed transfer transactions, and mine pending transactions through local HTTP endpoints without receiving wallet passphrases, private keys, or wallet file paths.
 
 ## 2. Architecture
 
 The project is organised as a small Go module:
 
-- `cmd/toychain`: command-line interface, read-only HTTP API, and output formatting.
+- `cmd/toychain`: command-line interface, HTTP API, signed transaction export, and output formatting.
 - `internal/blockchain`: domain logic for blocks, transactions, wallets, Merkle roots, mining, validation, balances, and persistence.
 
 The main types are:
@@ -21,7 +21,7 @@ The main types are:
 - `State`: confirmed chain plus pending transaction pool.
 - `LedgerState`: replayed balances, sender nonces, and seen transaction IDs.
 - `MerkleProofStep`: one sibling hash and its left/right position in a Merkle proof path.
-- `apiServer`: local read-only HTTP server for chain exploration endpoints.
+- `apiServer`: local HTTP server for chain exploration, signed transaction submission, faucet funding, and mining endpoints.
 
 ## 3. Hashing scheme
 
@@ -83,15 +83,15 @@ Validation scans the chain from block 0 to the tip and fails fast on the first o
 
 Because validation recomputes the Merkle root and replays the ledger, it detects both structural tampering and business-rule violations.
 
-## 7. Read-only REST API design
+## 7. REST API design
 
-Phase 3A adds a local HTTP server using the Go standard library `net/http` package. The server is started with:
+Phase 3 adds a local HTTP server using the Go standard library `net/http` package. The server is started with:
 
 ```bash
 ./toychain -data demo.json -difficulty 3 serve -addr :8080
 ```
 
-The read-only endpoints are:
+The read endpoints are:
 
 - `GET /health`,
 - `GET /chain`,
@@ -102,9 +102,17 @@ The read-only endpoints are:
 - `GET /merkle-proof?height=2&tx=0`,
 - `GET /validate`.
 
-Normal read endpoints load the JSON state and validate the chain before returning data. This prevents the API from presenting hand-edited invalid chain data as if it were valid. The `/validate` endpoint is slightly different because it must be able to report invalid chains instead of refusing to load them silently.
+The write endpoints are:
 
-The API is intentionally read-only. It does not receive wallet file paths, private keys, or wallet passphrases. This is a better standard design because wallet secrets should remain on the client side. Future write endpoints should accept already-signed transactions and verify them server-side rather than asking the server to decrypt a wallet.
+- `POST /faucet`,
+- `POST /transactions`,
+- `POST /mine`.
+
+Normal endpoints load the JSON state and validate the chain before returning or changing data. This prevents the API from presenting or mutating hand-edited invalid chain data as if it were valid. The `/validate` endpoint is slightly different because it must be able to report invalid chains instead of refusing to load them silently.
+
+The API intentionally does not receive wallet file paths, private keys, or wallet passphrases. The `tx-sign` CLI command signs a transaction locally and writes a signed transaction JSON file. The API can then receive that signed transaction through `POST /transactions`. This is closer to a standard blockchain node model: the client owns the private key and signs locally, while the node verifies the signature, transaction ID, nonce, duplicate transaction ID, sender balance, and chain validity.
+
+`POST /faucet` is kept as a learning endpoint because this toy chain has no mining reward or transaction fee model. `POST /mine` mines the current pending pool into a block using the configured proof-of-work difficulty.
 
 ## 8. Go feature choices
 
@@ -210,17 +218,17 @@ The command prints JSON similar to:
 
 The proof contains only the sibling hashes needed to reconstruct the Merkle root for the selected transaction. If the transaction hash, proof path, or Merkle root is changed, verification returns false. This demonstrates how block membership can be checked without re-hashing every transaction in the block.
 
-## 12. Experiment 4: read-only REST API
+## 12. Experiment 4: REST API read and write workflow
 
 ### Setup
 
-After creating and mining a demo chain, the API server was started:
+After creating wallets and initialising a demo chain, the API server was started:
 
 ```bash
 ./toychain -data demo.json -difficulty 3 serve -addr :8080
 ```
 
-Example API checks:
+Example read API checks:
 
 ```bash
 curl http://localhost:8080/health
@@ -230,15 +238,23 @@ curl "http://localhost:8080/merkle-proof?height=2&tx=0"
 curl http://localhost:8080/validate
 ```
 
+Example signed transaction flow:
+
+```bash
+./toychain -data demo.json -difficulty 3 tx-sign -wallet alice.wallet.json -passphrase alice-pass -to BOB_ADDRESS -amount 40 -out signed_tx.json
+curl -X POST http://localhost:8080/transactions -H "Content-Type: application/json" --data @signed_tx.json
+curl -X POST http://localhost:8080/mine -H "Content-Type: application/json" --data '{}'
+```
+
 ### Expected result
 
-The server returns JSON responses. `/validate` returns `valid: true` for a correct chain, `/blocks/{height}` returns block details including the Merkle root, `/balances` returns replayed confirmed balances, and `/merkle-proof` returns a proof with `valid: true`.
+The server returns JSON responses. `/validate` returns `valid: true` for a correct chain, `/blocks/{height}` returns block details including the Merkle root, `/balances` returns replayed balances, `/merkle-proof` returns a proof with `valid: true`, `POST /transactions` accepts valid signed transactions into the pending pool, and `POST /mine` creates a new block from pending transactions.
 
 ### Explanation
 
-This demonstrates how the CLI blockchain can be exposed through a backend-style interface without changing the underlying chain state. It also preserves the safer wallet model because the API does not receive passphrases or private keys.
+This demonstrates how the CLI blockchain can be exposed through a backend-style interface while preserving safer wallet handling. The API accepts signed transaction data, but wallet decryption and signing remain local to the client. If a submitted transaction is unsigned, has a mismatched ID, has an invalid signature, uses the wrong nonce, duplicates an existing transaction ID, or overspends, the API rejects it with a structured JSON error.
 
-## 12. Discussion
+## 13. Discussion
 
 ### Why previous-hash links make old tampering impractical in real chains
 
@@ -258,13 +274,12 @@ Another simple private-network alternative is proof-of-authority, where known au
 
 The project now includes a Merkle root and a proof command, but it still stores the full transactions inside each local block file.
 
-## 13. Constraints and future improvements
+## 14. Constraints and future improvements
 
 This implementation is suitable for a local CLI blockchain learning project. It is not production money software.
 
 Current constraints:
 
-- no write REST API endpoints yet,
 - no peer-to-peer network,
 - no distributed consensus,
 - no fork choice rule,
@@ -277,7 +292,7 @@ Future improvements:
 
 1. Use interactive hidden passphrase input.
 2. Replace the educational KDF with Argon2id or scrypt.
-3. Add write API support that accepts already-signed transactions.
+3. Add API authentication or local-only binding controls for write endpoints.
 4. Add peer-to-peer node communication.
 5. Add proof-of-authority or fork-resolution logic.
 6. Add difficulty retargeting.

@@ -1,6 +1,6 @@
 # Toy Blockchain and Ledger Simulator
 
-A pure-Go command-line toy blockchain and ledger simulator that demonstrates deterministic block hashing, Merkle-root-based block headers, faucet-funded transactions, wallet-based signed transfers, read-only REST API endpoints, proof-of-work mining, full-chain validation, tamper detection, encrypted wallet storage, JSON persistence, and automated tests.
+A pure-Go command-line toy blockchain and ledger simulator that demonstrates deterministic block hashing, Merkle-root-based block headers, faucet-funded transactions, wallet-based signed transfers, REST API read and write endpoints, proof-of-work mining, full-chain validation, tamper detection, encrypted wallet storage, JSON persistence, and automated tests.
 
 This project is intentionally local and educational. It does not connect to any external blockchain network, peer node, RPC endpoint, or third-party blockchain SDK.
 
@@ -28,7 +28,7 @@ This project is intentionally local and educational. It does not connect to any 
 - Balance overflow protection
 - JSON file persistence
 - Command-line interface
-- Read-only REST API for chain exploration
+- REST API for chain exploration, faucet funding, signed transaction submission, and mining
 - Unit tests for core blockchain, wallet, Merkle, CLI, and API behaviour
 
 ## Requirements
@@ -115,7 +115,7 @@ go vet ./...
 go build -o toychain.exe ./cmd/toychain
 ```
 
-The automated tests cover deterministic hashing, canonical genesis validation, Merkle root calculation, Merkle-root tamper detection, Merkle proof generation/verification, proof-of-work target checks, signed transaction validation, wallet encryption/decryption, wrong-passphrase rejection, nonce validation, duplicate transaction rejection, invalid amount rejection, overspending rejection, pending-pool overspending rejection, previous-hash-link validation, JSON persistence, CLI error handling, read-only REST API endpoints, and tamper detection.
+The automated tests cover deterministic hashing, canonical genesis validation, Merkle root calculation, Merkle-root tamper detection, Merkle proof generation/verification, proof-of-work target checks, signed transaction validation, wallet encryption/decryption, wrong-passphrase rejection, nonce validation, duplicate transaction rejection, invalid amount rejection, overspending rejection, pending-pool overspending rejection, previous-hash-link validation, JSON persistence, CLI error handling, REST API read and write endpoints, and tamper detection.
 
 ## Command-Line Usage
 
@@ -196,6 +196,16 @@ Use the address from `wallet show`:
 ```
 
 The sender is derived from the wallet address. The transaction is signed using the decrypted private key. The chain validates the signature using the public key stored in the transaction.
+
+### Export a Signed Transaction JSON File
+
+The `tx-sign` command signs a transaction locally but does not submit it to the pending pool. This is useful for the REST API, because the server should receive already-signed transactions instead of wallet passphrases.
+
+```powershell
+.\toychain.exe -data demo.json -difficulty 3 tx-sign -wallet alice.wallet.json -passphrase alice-pass -to BOB_ADDRESS -amount 40 -out signed_tx.json
+```
+
+The output file contains a complete signed transaction with sender address, recipient address, amount, nonce, public key, signature, and deterministic transaction ID.
 
 ### Show Balances
 
@@ -280,9 +290,11 @@ Expected validation result:
 VALID: 3 blocks checked
 ```
 
-## Read-only REST API
+## REST API
 
-Phase 3A adds a local read-only HTTP API using Go's standard `net/http` package. The API is useful for inspecting the blockchain like a small blockchain explorer. It does not accept wallet passphrases and it does not create transactions or mine blocks.
+Phase 3 adds a local HTTP API using Go's standard `net/http` package. The API works like a small blockchain explorer and local node API. It can read chain data, validate the chain, accept faucet transactions, accept already-signed transfer transactions, and mine pending transactions.
+
+Important security design: the API does **not** receive wallet passphrases, private keys, or wallet file paths. Wallets are unlocked only by the CLI/client. The API receives already-signed transactions and verifies them before adding them to the pending pool.
 
 Start the server:
 
@@ -290,7 +302,7 @@ Start the server:
 .\toychain.exe -data demo.json -difficulty 3 serve -addr :8080
 ```
 
-Available read-only endpoints:
+Read endpoints:
 
 | Method | Endpoint | Purpose |
 |---|---|---|
@@ -304,7 +316,15 @@ Available read-only endpoints:
 | `GET` | `/merkle-proof?height=2&tx=0` | Generate and verify a Merkle proof |
 | `GET` | `/validate` | Validate the chain and return JSON result |
 
-PowerShell examples:
+Write endpoints:
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `POST` | `/faucet` | Add a faucet funding transaction to the pending pool |
+| `POST` | `/transactions` | Submit an already-signed transfer transaction to the pending pool |
+| `POST` | `/mine` | Mine pending transactions into a new block |
+
+PowerShell read examples:
 
 ```powershell
 Invoke-RestMethod http://localhost:8080/health
@@ -314,7 +334,43 @@ Invoke-RestMethod "http://localhost:8080/merkle-proof?height=2&tx=0"
 Invoke-RestMethod http://localhost:8080/validate
 ```
 
-The API intentionally does not receive wallet passphrases. Future write endpoints should accept already-signed transactions rather than asking the server to unlock a wallet.
+### Faucet API Example
+
+If you are running the API examples in a new PowerShell terminal, load the wallet addresses again first:
+
+```powershell
+$alice = (Get-Content .\alice.wallet.json -Raw | ConvertFrom-Json).address
+$bob = (Get-Content .\bob.wallet.json -Raw | ConvertFrom-Json).address
+
+Write-Host "Alice = $alice"
+Write-Host "Bob = $bob"
+```
+
+Then submit a faucet transaction and mine it:
+
+```powershell
+$faucetBody = @{ to = $alice; amount = 100; memo = "api faucet" } | ConvertTo-Json
+
+Invoke-RestMethod -Method Post -Uri http://localhost:8080/faucet -Body $faucetBody -ContentType "application/json"
+Invoke-RestMethod -Method Post -Uri http://localhost:8080/mine -Body '{}' -ContentType "application/json"
+```
+
+### Signed Transaction API Example
+
+First, sign the transaction locally using the CLI. This keeps the wallet passphrase on the client side:
+
+```powershell
+.\toychain.exe -data demo.json -difficulty 3 tx-sign -wallet alice.wallet.json -passphrase alice-pass -to $bob -amount 40 -out signed_tx.json
+```
+
+Then submit the already-signed transaction to the API and mine it:
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://localhost:8080/transactions -Body (Get-Content signed_tx.json -Raw) -ContentType "application/json"
+Invoke-RestMethod -Method Post -Uri http://localhost:8080/mine -Body '{}' -ContentType "application/json"
+```
+
+This design is closer to a standard blockchain node model: clients sign transactions locally, while the node/API verifies signatures, nonce sequence, duplicate transaction IDs, balances, and chain validity.
 
 ## Invalid Transaction Examples
 
@@ -421,9 +477,9 @@ Validation fails fast and reports the first offending block. It checks canonical
 
 ### REST API Design
 
-The REST API is read-only in this phase. It loads the JSON state file, validates the chain for normal read endpoints, and returns JSON responses. Invalid paths, unsupported methods, invalid block heights, invalid transaction IDs, and invalid Merkle proof indexes return structured JSON error responses.
+The REST API loads the JSON state file, validates the chain for normal endpoints, and returns structured JSON responses. Invalid paths, unsupported methods, invalid block heights, invalid transaction IDs, invalid Merkle proof indexes, malformed request bodies, unsigned transactions, duplicate transactions, nonce errors, and insufficient balances return structured JSON error responses.
 
-This design keeps private key handling on the client side. The server does not receive wallet paths or wallet passphrases. This is closer to a standard blockchain model, where clients sign transactions locally and nodes only verify and accept already-signed transactions.
+The write API is intentionally designed without wallet passphrases. `POST /transactions` accepts an already-signed transaction JSON object. The server verifies the transaction ID, signature, sender public key, nonce, duplicate transaction ID, and ledger rules before saving it to the pending pool. This keeps private key handling on the client side and is closer to a standard blockchain node model.
 
 ## Known Constraints and Future Improvements
 
@@ -444,7 +500,7 @@ Useful future improvements:
 
 1. Use interactive hidden passphrase input.
 2. Replace the educational KDF with Argon2id or scrypt.
-3. Add write API support that accepts already-signed transactions.
+3. Add API authentication or a local-only binding mode for write endpoints.
 4. Add peer-to-peer node communication.
 5. Add proof-of-authority or fork-resolution logic.
 6. Add difficulty retargeting.
