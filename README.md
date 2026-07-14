@@ -292,7 +292,7 @@ VALID: 3 blocks checked
 
 ## REST API
 
-Phase 3 adds a local HTTP API using Go's standard `net/http` package. The API works like a small blockchain explorer and local node API. It can read chain data, validate the chain, accept faucet transactions, accept already-signed transfer transactions, and mine pending transactions.
+The project includes a local HTTP API using Go's standard `net/http` package. The API works like a small blockchain explorer and local node API. It can read chain data, validate the chain, accept faucet transactions, accept already-signed transfer transactions, and mine pending transactions.
 
 Important security design: the API does **not** receive wallet passphrases, private keys, or wallet file paths. Wallets are unlocked only by the CLI/client. The API receives already-signed transactions and verifies them before adding them to the pending pool.
 
