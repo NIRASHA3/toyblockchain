@@ -441,13 +441,17 @@ func cmdMerkleProof(args []string, cfg cliConfig, bcfg blockchain.Config, stdout
 func cmdServe(args []string, cfg cliConfig, bcfg blockchain.Config, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	addr := fs.String("addr", ":8080", "HTTP server address")
+	addr := fs.String("addr", "127.0.0.1:8080", "HTTP server address")
+	apiToken := fs.String("api-token", "", "optional token required by write API endpoints via X-API-Token")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	handler := newAPIServer(cfg.dataPath, bcfg)
+	handler := newAPIServer(cfg.dataPath, bcfg, *apiToken)
 	server := &http.Server{Addr: *addr, Handler: handler}
 	fmt.Fprintf(stdout, "serving REST API on %s using state %s\n", *addr, cfg.dataPath)
+	if *apiToken != "" {
+		fmt.Fprintln(stdout, "write endpoints require X-API-Token")
+	}
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
@@ -521,7 +525,8 @@ Commands:
   balances [-pending]                         show account balances
   pending                                     list pending transactions
   merkle-proof -height N -tx I                print a transaction Merkle proof
-  serve [-addr :8080]                         start REST API server
+  serve [-addr 127.0.0.1:8080] [-api-token TOKEN]
+                                             start REST API server
   tamper -height N -tx I -amount N            deliberately alter stored data for demo`))
 }
 

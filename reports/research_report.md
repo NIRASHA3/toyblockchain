@@ -4,7 +4,7 @@
 
 This project implements a local command-line blockchain and ledger simulator in pure Go. The goal is to demonstrate the internal behaviour of a small blockchain, including deterministic block hashing, proof-of-work mining, ledger replay, tamper detection, JSON persistence, transaction validation, wallet-based signatures, Merkle-root-based transaction commitment, and REST API access with signed transaction submission.
 
-The latest improvement extends the REST API with safe write endpoints. Earlier Phase 3 work exposed read-only blockchain explorer endpoints. The updated version can also accept faucet transactions, accept already-signed transfer transactions, and mine pending transactions through local HTTP endpoints without receiving wallet passphrases, private keys, or wallet file paths.
+The latest improvement hardens the REST API by binding the server to localhost by default and adding optional token protection for state-changing write endpoints. The API can accept faucet transactions, accept already-signed transfer transactions, and mine pending transactions through local HTTP endpoints without receiving wallet passphrases, private keys, or wallet file paths.
 
 ## 2. Architecture
 
@@ -21,7 +21,7 @@ The main types are:
 - `State`: confirmed chain plus pending transaction pool.
 - `LedgerState`: replayed balances, sender nonces, and seen transaction IDs.
 - `MerkleProofStep`: one sibling hash and its left/right position in a Merkle proof path.
-- `apiServer`: local HTTP server for chain exploration, signed transaction submission, faucet funding, and mining endpoints.
+- `apiServer`: local HTTP server for chain exploration, signed transaction submission, faucet funding, mining endpoints, and optional token protection for writes.
 
 ## 3. Hashing scheme
 
@@ -85,10 +85,16 @@ Because validation recomputes the Merkle root and replays the ledger, it detects
 
 ## 7. REST API design
 
-Phase 3 adds a local HTTP server using the Go standard library `net/http` package. The server is started with:
+The project includes a local HTTP server using the Go standard library `net/http` package. The server binds to `127.0.0.1:8080` by default so the API is limited to the local machine unless another address is explicitly provided. It can be started with:
 
 ```bash
-./toychain -data demo.json -difficulty 3 serve -addr :8080
+./toychain -data demo.json -difficulty 3 serve
+```
+
+Optional token protection can be enabled for write endpoints:
+
+```bash
+./toychain -data demo.json -difficulty 3 serve -addr 127.0.0.1:8080 -api-token dev-secret
 ```
 
 The read endpoints are:
@@ -111,6 +117,8 @@ The write endpoints are:
 Normal endpoints load the JSON state and validate the chain before returning or changing data. This prevents the API from presenting or mutating hand-edited invalid chain data as if it were valid. The `/validate` endpoint is slightly different because it must be able to report invalid chains instead of refusing to load them silently.
 
 The API intentionally does not receive wallet file paths, private keys, or wallet passphrases. The `tx-sign` CLI command signs a transaction locally and writes a signed transaction JSON file. The API can then receive that signed transaction through `POST /transactions`. This is closer to a standard blockchain node model: the client owns the private key and signs locally, while the node verifies the signature, transaction ID, nonce, duplicate transaction ID, sender balance, and chain validity.
+
+When an API token is configured, the state-changing endpoints `POST /faucet`, `POST /transactions`, and `POST /mine` require the `X-API-Token` request header. Read endpoints remain available without the token. This keeps the local chain easy to inspect while reducing the risk of accidental unauthenticated writes. The token comparison uses constant-time comparison from the Go standard library to avoid simple timing differences.
 
 `POST /faucet` is kept as a learning endpoint because this toy chain has no mining reward or transaction fee model. `POST /mine` mines the current pending pool into a block using the configured proof-of-work difficulty.
 
@@ -225,25 +233,25 @@ The proof contains only the sibling hashes needed to reconstruct the Merkle root
 After creating wallets and initialising a demo chain, the API server was started:
 
 ```bash
-./toychain -data demo.json -difficulty 3 serve -addr :8080
+./toychain -data demo.json -difficulty 3 serve -addr 127.0.0.1:8080 -api-token dev-secret
 ```
 
 Example read API checks:
 
 ```bash
-curl http://localhost:8080/health
-curl http://localhost:8080/blocks/2
-curl http://localhost:8080/balances
-curl "http://localhost:8080/merkle-proof?height=2&tx=0"
-curl http://localhost:8080/validate
+curl http://127.0.0.1:8080/health
+curl http://127.0.0.1:8080/blocks/2
+curl http://127.0.0.1:8080/balances
+curl "http://127.0.0.1:8080/merkle-proof?height=2&tx=0"
+curl http://127.0.0.1:8080/validate
 ```
 
 Example signed transaction flow:
 
 ```bash
 ./toychain -data demo.json -difficulty 3 tx-sign -wallet alice.wallet.json -passphrase alice-pass -to BOB_ADDRESS -amount 40 -out signed_tx.json
-curl -X POST http://localhost:8080/transactions -H "Content-Type: application/json" --data @signed_tx.json
-curl -X POST http://localhost:8080/mine -H "Content-Type: application/json" --data '{}'
+curl -X POST http://127.0.0.1:8080/transactions -H "Content-Type: application/json" -H "X-API-Token: dev-secret" --data @signed_tx.json
+curl -X POST http://127.0.0.1:8080/mine -H "Content-Type: application/json" -H "X-API-Token: dev-secret" --data '{}'
 ```
 
 ### Expected result
@@ -274,7 +282,42 @@ Another simple private-network alternative is proof-of-authority, where known au
 
 The project now includes a Merkle root and a proof command, but it still stores the full transactions inside each local block file.
 
-## 14. Constraints and future improvements
+## 14. Experiment 5: REST API security controls
+
+### Setup
+
+The server can be started in protected mode:
+
+```bash
+./toychain -data demo.json -difficulty 3 serve -addr 127.0.0.1:8080 -api-token dev-secret
+```
+
+A read endpoint can still be called without a token:
+
+```bash
+curl http://127.0.0.1:8080/health
+```
+
+A write endpoint without a token is rejected:
+
+```bash
+curl -X POST http://127.0.0.1:8080/mine -d '{}' -H 'Content-Type: application/json'
+```
+
+The same write endpoint succeeds only when the correct token is supplied:
+
+```bash
+curl -X POST http://127.0.0.1:8080/mine \
+  -H 'Content-Type: application/json' \
+  -H 'X-API-Token: dev-secret' \
+  -d '{}'
+```
+
+### Explanation
+
+The security controls are intentionally simple and local. Binding to localhost by default prevents accidental exposure on the local network. Optional token protection separates read-only inspection from state-changing operations. This is not full production security, but it is a useful enterprise-style hardening step for a local educational node.
+
+## 15. Constraints and future improvements
 
 This implementation is suitable for a local CLI blockchain learning project. It is not production money software.
 
@@ -292,7 +335,7 @@ Future improvements:
 
 1. Use interactive hidden passphrase input.
 2. Replace the educational KDF with Argon2id or scrypt.
-3. Add API authentication or local-only binding controls for write endpoints.
+3. Add HTTPS support, stronger authentication, rate limiting, and role-based API access.
 4. Add peer-to-peer node communication.
 5. Add proof-of-authority or fork-resolution logic.
 6. Add difficulty retargeting.

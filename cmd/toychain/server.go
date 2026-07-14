@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 type apiServer struct {
 	dataPath string
 	cfg      blockchain.Config
+	apiToken string
 }
 
 type apiErrorResponse struct {
@@ -22,10 +24,11 @@ type apiErrorResponse struct {
 }
 
 type healthResponse struct {
-	Status       string `json:"status"`
-	Service      string `json:"service"`
-	ReadOnly     bool   `json:"read_only"`
-	WriteEnabled bool   `json:"write_enabled"`
+	Status         string `json:"status"`
+	Service        string `json:"service"`
+	ReadOnly       bool   `json:"read_only"`
+	WriteEnabled   bool   `json:"write_enabled"`
+	WriteProtected bool   `json:"write_protected"`
 }
 
 type chainResponse struct {
@@ -91,8 +94,8 @@ type mineResponse struct {
 	PendingCount int              `json:"pending_count"`
 }
 
-func newAPIServer(dataPath string, cfg blockchain.Config) http.Handler {
-	s := &apiServer{dataPath: dataPath, cfg: cfg}
+func newAPIServer(dataPath string, cfg blockchain.Config, apiToken string) http.Handler {
+	s := &apiServer{dataPath: dataPath, cfg: cfg, apiToken: apiToken}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/chain", s.handleChain)
@@ -112,7 +115,7 @@ func (s *apiServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if !requireMethod(w, r, http.MethodGet) {
 		return
 	}
-	writeJSON(w, http.StatusOK, healthResponse{Status: "ok", Service: "toychain", ReadOnly: false, WriteEnabled: true})
+	writeJSON(w, http.StatusOK, healthResponse{Status: "ok", Service: "toychain", ReadOnly: false, WriteEnabled: true, WriteProtected: s.apiToken != ""})
 }
 
 func (s *apiServer) handleChain(w http.ResponseWriter, r *http.Request) {
@@ -213,6 +216,9 @@ func (s *apiServer) handleSubmitTransaction(w http.ResponseWriter, r *http.Reque
 	if !requireMethod(w, r, http.MethodPost) {
 		return
 	}
+	if !s.requireWriteToken(w, r) {
+		return
+	}
 	var tx blockchain.Transaction
 	if err := decodeJSONBody(w, r, &tx); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -239,6 +245,9 @@ func (s *apiServer) handleSubmitTransaction(w http.ResponseWriter, r *http.Reque
 
 func (s *apiServer) handleFaucet(w http.ResponseWriter, r *http.Request) {
 	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	if !s.requireWriteToken(w, r) {
 		return
 	}
 	var req faucetRequest
@@ -272,6 +281,9 @@ func (s *apiServer) handleFaucet(w http.ResponseWriter, r *http.Request) {
 
 func (s *apiServer) handleMine(w http.ResponseWriter, r *http.Request) {
 	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	if !s.requireWriteToken(w, r) {
 		return
 	}
 	if r.Body != nil && r.ContentLength != 0 {
@@ -347,6 +359,22 @@ func (s *apiServer) handleValidate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, validateResponse{Valid: true, BlocksChecked: len(state.Chain)})
+}
+
+func (s *apiServer) requireWriteToken(w http.ResponseWriter, r *http.Request) bool {
+	if s.apiToken == "" {
+		return true
+	}
+	provided := r.Header.Get("X-API-Token")
+	if provided == "" {
+		writeError(w, http.StatusUnauthorized, "missing API token")
+		return false
+	}
+	if subtle.ConstantTimeCompare([]byte(provided), []byte(s.apiToken)) != 1 {
+		writeError(w, http.StatusForbidden, "invalid API token")
+		return false
+	}
+	return true
 }
 
 func (s *apiServer) loadValidStateForAPI(w http.ResponseWriter) (blockchain.State, bool) {

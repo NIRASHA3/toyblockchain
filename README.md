@@ -29,6 +29,7 @@ This project is intentionally local and educational. It does not connect to any 
 - JSON file persistence
 - Command-line interface
 - REST API for chain exploration, faucet funding, signed transaction submission, and mining
+- REST API binds to localhost by default and supports optional token protection for write endpoints
 - Unit tests for core blockchain, wallet, Merkle, CLI, and API behaviour
 
 ## Requirements
@@ -296,10 +297,22 @@ The project includes a local HTTP API using Go's standard `net/http` package. Th
 
 Important security design: the API does **not** receive wallet passphrases, private keys, or wallet file paths. Wallets are unlocked only by the CLI/client. The API receives already-signed transactions and verifies them before adding them to the pending pool.
 
-Start the server:
+Start the server. By default, the API should be bound to localhost only:
 
 ```powershell
-.\toychain.exe -data demo.json -difficulty 3 serve -addr :8080
+.\toychain.exe -data demo.json -difficulty 3 serve
+```
+
+You can also provide the address explicitly:
+
+```powershell
+.\toychain.exe -data demo.json -difficulty 3 serve -addr 127.0.0.1:8080
+```
+
+Optional write-endpoint protection can be enabled with `-api-token`. When a token is configured, `POST /faucet`, `POST /transactions`, and `POST /mine` require the `X-API-Token` header. Read endpoints remain open.
+
+```powershell
+.\toychain.exe -data demo.json -difficulty 3 serve -addr 127.0.0.1:8080 -api-token dev-secret
 ```
 
 Read endpoints:
@@ -327,12 +340,20 @@ Write endpoints:
 PowerShell read examples:
 
 ```powershell
-Invoke-RestMethod http://localhost:8080/health
-Invoke-RestMethod http://localhost:8080/blocks/2
-Invoke-RestMethod http://localhost:8080/balances
-Invoke-RestMethod "http://localhost:8080/merkle-proof?height=2&tx=0"
-Invoke-RestMethod http://localhost:8080/validate
+Invoke-RestMethod http://127.0.0.1:8080/health
+Invoke-RestMethod http://127.0.0.1:8080/blocks/2
+Invoke-RestMethod http://127.0.0.1:8080/balances
+Invoke-RestMethod "http://127.0.0.1:8080/merkle-proof?height=2&tx=0"
+Invoke-RestMethod http://127.0.0.1:8080/validate
 ```
+
+If the server was started with `-api-token`, prepare headers before calling write endpoints:
+
+```powershell
+$headers = @{ "X-API-Token" = "dev-secret" }
+```
+
+If no API token was configured, omit the `-Headers $headers` part from the write examples.
 
 ### Faucet API Example
 
@@ -351,8 +372,8 @@ Then submit a faucet transaction and mine it:
 ```powershell
 $faucetBody = @{ to = $alice; amount = 100; memo = "api faucet" } | ConvertTo-Json
 
-Invoke-RestMethod -Method Post -Uri http://localhost:8080/faucet -Body $faucetBody -ContentType "application/json"
-Invoke-RestMethod -Method Post -Uri http://localhost:8080/mine -Body '{}' -ContentType "application/json"
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8080/faucet -Headers $headers -Body $faucetBody -ContentType "application/json"
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8080/mine -Headers $headers -Body '{}' -ContentType "application/json"
 ```
 
 ### Signed Transaction API Example
@@ -366,8 +387,8 @@ First, sign the transaction locally using the CLI. This keeps the wallet passphr
 Then submit the already-signed transaction to the API and mine it:
 
 ```powershell
-Invoke-RestMethod -Method Post -Uri http://localhost:8080/transactions -Body (Get-Content signed_tx.json -Raw) -ContentType "application/json"
-Invoke-RestMethod -Method Post -Uri http://localhost:8080/mine -Body '{}' -ContentType "application/json"
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8080/transactions -Headers $headers -Body (Get-Content signed_tx.json -Raw) -ContentType "application/json"
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8080/mine -Headers $headers -Body '{}' -ContentType "application/json"
 ```
 
 This design is closer to a standard blockchain node model: clients sign transactions locally, while the node/API verifies signatures, nonce sequence, duplicate transaction IDs, balances, and chain validity.
@@ -481,6 +502,8 @@ The REST API loads the JSON state file, validates the chain for normal endpoints
 
 The write API is intentionally designed without wallet passphrases. `POST /transactions` accepts an already-signed transaction JSON object. The server verifies the transaction ID, signature, sender public key, nonce, duplicate transaction ID, and ledger rules before saving it to the pending pool. This keeps private key handling on the client side and is closer to a standard blockchain node model.
 
+For safer local testing, the server binds to `127.0.0.1:8080` by default instead of listening on all network interfaces. The optional `-api-token` flag protects state-changing endpoints with the `X-API-Token` header. This is not a replacement for full production API security, but it prevents accidental unauthenticated writes during local development.
+
 ## Known Constraints and Future Improvements
 
 This is a local educational blockchain simulator, not production money software.
@@ -500,7 +523,7 @@ Useful future improvements:
 
 1. Use interactive hidden passphrase input.
 2. Replace the educational KDF with Argon2id or scrypt.
-3. Add API authentication or a local-only binding mode for write endpoints.
+3. Add HTTPS support, stronger authentication, rate limiting, and role-based API access.
 4. Add peer-to-peer node communication.
 5. Add proof-of-authority or fork-resolution logic.
 6. Add difficulty retargeting.

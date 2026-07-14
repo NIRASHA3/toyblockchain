@@ -86,9 +86,25 @@ func performJSONAPIRequest(t *testing.T, handler http.Handler, method string, pa
 	return rec
 }
 
+func performJSONAPIRequestWithToken(t *testing.T, handler http.Handler, method string, path string, body any, token string) *httptest.ResponseRecorder {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(body); err != nil {
+		t.Fatalf("encode request body: %v", err)
+	}
+	req := httptest.NewRequest(method, path, &buf)
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("X-API-Token", token)
+	}
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	return rec
+}
+
 func TestAPIHealthAndValidate(t *testing.T) {
 	fixture := buildAPITestChain(t)
-	handler := newAPIServer(fixture.ChainPath, blockchain.Config{Difficulty: 1, MaxBlockTx: blockchain.DefaultMaxBlockTx})
+	handler := newAPIServer(fixture.ChainPath, blockchain.Config{Difficulty: 1, MaxBlockTx: blockchain.DefaultMaxBlockTx}, "")
 
 	rec := performAPIRequest(t, handler, http.MethodGet, "/health")
 	if rec.Code != http.StatusOK {
@@ -113,7 +129,7 @@ func TestAPIHealthAndValidate(t *testing.T) {
 
 func TestAPIBlockchainEndpoints(t *testing.T) {
 	fixture := buildAPITestChain(t)
-	handler := newAPIServer(fixture.ChainPath, blockchain.Config{Difficulty: 1, MaxBlockTx: blockchain.DefaultMaxBlockTx})
+	handler := newAPIServer(fixture.ChainPath, blockchain.Config{Difficulty: 1, MaxBlockTx: blockchain.DefaultMaxBlockTx}, "")
 
 	rec := performAPIRequest(t, handler, http.MethodGet, "/blocks/2")
 	if rec.Code != http.StatusOK {
@@ -154,7 +170,7 @@ func TestAPIBlockchainEndpoints(t *testing.T) {
 
 func TestAPIMerkleProofAndErrors(t *testing.T) {
 	fixture := buildAPITestChain(t)
-	handler := newAPIServer(fixture.ChainPath, blockchain.Config{Difficulty: 1, MaxBlockTx: blockchain.DefaultMaxBlockTx})
+	handler := newAPIServer(fixture.ChainPath, blockchain.Config{Difficulty: 1, MaxBlockTx: blockchain.DefaultMaxBlockTx}, "")
 
 	rec := performAPIRequest(t, handler, http.MethodGet, "/merkle-proof?height=2&tx=0")
 	if rec.Code != http.StatusOK {
@@ -181,7 +197,7 @@ func TestAPIMerkleProofAndErrors(t *testing.T) {
 
 func TestAPIFaucetAndMine(t *testing.T) {
 	fixture := buildAPITestChain(t)
-	handler := newAPIServer(fixture.ChainPath, blockchain.Config{Difficulty: 1, MaxBlockTx: blockchain.DefaultMaxBlockTx})
+	handler := newAPIServer(fixture.ChainPath, blockchain.Config{Difficulty: 1, MaxBlockTx: blockchain.DefaultMaxBlockTx}, "")
 
 	rec := performJSONAPIRequest(t, handler, http.MethodPost, "/faucet", faucetRequest{To: fixture.BobAddr, Amount: 25, Memo: "api faucet"})
 	if rec.Code != http.StatusCreated {
@@ -222,7 +238,7 @@ func TestAPIFaucetAndMine(t *testing.T) {
 
 func TestAPISignedTransactionSubmission(t *testing.T) {
 	fixture := buildAPITestChain(t)
-	handler := newAPIServer(fixture.ChainPath, blockchain.Config{Difficulty: 1, MaxBlockTx: blockchain.DefaultMaxBlockTx})
+	handler := newAPIServer(fixture.ChainPath, blockchain.Config{Difficulty: 1, MaxBlockTx: blockchain.DefaultMaxBlockTx}, "")
 
 	state, err := blockchain.LoadState(fixture.ChainPath)
 	if err != nil {
@@ -268,7 +284,7 @@ func TestAPISignedTransactionSubmission(t *testing.T) {
 
 func TestAPISignedTransactionRejectsUnsignedAndFaucetSubmission(t *testing.T) {
 	fixture := buildAPITestChain(t)
-	handler := newAPIServer(fixture.ChainPath, blockchain.Config{Difficulty: 1, MaxBlockTx: blockchain.DefaultMaxBlockTx})
+	handler := newAPIServer(fixture.ChainPath, blockchain.Config{Difficulty: 1, MaxBlockTx: blockchain.DefaultMaxBlockTx}, "")
 
 	unsigned := blockchain.Transaction{ID: "bad", From: fixture.AliceAddr, To: fixture.BobAddr, Amount: 1, CreatedAt: time.Now().UnixNano(), Nonce: 2}
 	rec := performJSONAPIRequest(t, handler, http.MethodPost, "/transactions", unsigned)
@@ -283,5 +299,39 @@ func TestAPISignedTransactionRejectsUnsignedAndFaucetSubmission(t *testing.T) {
 	rec = performJSONAPIRequest(t, handler, http.MethodPost, "/transactions", faucetTx)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("faucet via transactions status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAPIWriteTokenProtection(t *testing.T) {
+	fixture := buildAPITestChain(t)
+	handler := newAPIServer(fixture.ChainPath, blockchain.Config{Difficulty: 1, MaxBlockTx: blockchain.DefaultMaxBlockTx}, "secret-token")
+
+	rec := performAPIRequest(t, handler, http.MethodGet, "/health")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("health status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"write_protected": true`) {
+		t.Fatalf("health body missing write_protected=true: %s", rec.Body.String())
+	}
+
+	faucet := faucetRequest{To: fixture.BobAddr, Amount: 25, Memo: "protected faucet"}
+	rec = performJSONAPIRequest(t, handler, http.MethodPost, "/faucet", faucet)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("missing token status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	rec = performJSONAPIRequestWithToken(t, handler, http.MethodPost, "/faucet", faucet, "wrong-token")
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("wrong token status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	rec = performJSONAPIRequestWithToken(t, handler, http.MethodPost, "/faucet", faucet, "secret-token")
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("correct token status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	rec = performAPIRequest(t, handler, http.MethodGet, "/balances?pending=true")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("read endpoint with protected writes status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 }
