@@ -1,6 +1,6 @@
 # Toy Blockchain and Ledger Simulator
 
-A pure-Go command-line toy blockchain and ledger simulator that demonstrates deterministic block hashing, faucet-funded transactions, wallet-based signed transfers, proof-of-work mining, full-chain validation, tamper detection, encrypted wallet storage, JSON persistence, and automated tests.
+A pure-Go command-line toy blockchain and ledger simulator that demonstrates deterministic block hashing, Merkle-root-based block headers, faucet-funded transactions, wallet-based signed transfers, proof-of-work mining, full-chain validation, tamper detection, encrypted wallet storage, JSON persistence, and automated tests.
 
 This project is intentionally local and educational. It does not connect to any external blockchain network, peer node, RPC endpoint, or third-party blockchain SDK.
 
@@ -10,6 +10,8 @@ This project is intentionally local and educational. It does not connect to any 
 - SHA-256 block hashing
 - Previous-hash block linking
 - Per-block stored difficulty
+- Merkle root stored in every block
+- Transaction hash leaves and deterministic Merkle root calculation
 - Faucet-funded account model
 - Encrypted Ed25519 wallet generation
 - Public-key-derived wallet addresses
@@ -57,6 +59,8 @@ toyblockchain/
       errors.go
       invalid_transaction_test.go
       ledger.go
+      merkle.go
+      merkle_test.go
       mining.go
       state.go
       storage.go
@@ -107,7 +111,7 @@ go vet ./...
 go build -o toychain.exe ./cmd/toychain
 ```
 
-The automated tests cover deterministic hashing, canonical genesis validation, proof-of-work target checks, signed transaction validation, wallet encryption/decryption, wrong-passphrase rejection, nonce validation, duplicate transaction rejection, invalid amount rejection, overspending rejection, pending-pool overspending rejection, previous-hash-link validation, JSON persistence, CLI error handling, and tamper detection.
+The automated tests cover deterministic hashing, canonical genesis validation, Merkle root calculation, Merkle-root tamper detection, proof-of-work target checks, signed transaction validation, wallet encryption/decryption, wrong-passphrase rejection, nonce validation, duplicate transaction rejection, invalid amount rejection, overspending rejection, pending-pool overspending rejection, previous-hash-link validation, JSON persistence, CLI error handling, and tamper detection.
 
 ## Command-Line Usage
 
@@ -195,7 +199,7 @@ The sender is derived from the wallet address. The transaction is signed using t
 .\toychain.exe -data demo.json -difficulty 3 balances
 ```
 
-Balances are derived by replaying the confirmed chain from genesis to the latest block.
+Balances are derived by replaying the confirmed chain from genesis to the latest block. Balances are displayed by wallet address because the blockchain identity is the public-key-derived address, not a local human name.
 
 ### Validate the Chain
 
@@ -203,7 +207,7 @@ Balances are derived by replaying the confirmed chain from genesis to the latest
 .\toychain.exe -data demo.json -difficulty 3 validate
 ```
 
-Validation checks block structure, canonical genesis, stored hashes, recomputed hashes, proof-of-work, previous-hash links, timestamps, transaction IDs, signatures, nonces, duplicate transaction IDs, sender balances, and overflow rules.
+Validation checks block structure, canonical genesis, stored hashes, recomputed hashes, Merkle roots, proof-of-work, previous-hash links, timestamps, transaction IDs, signatures, nonces, duplicate transaction IDs, sender balances, and overflow rules.
 
 ### Print the Chain
 
@@ -211,13 +215,15 @@ Validation checks block structure, canonical genesis, stored hashes, recomputed 
 .\toychain.exe -data demo.json -difficulty 3 print
 ```
 
+Printed blocks include height, timestamp, difficulty, previous hash, Merkle root, nonce, block hash, and transaction count.
+
 ### Tamper with a Transaction
 
 ```powershell
 .\toychain.exe -data demo.json tamper -height 1 -tx 0 -amount 999
 ```
 
-This deliberately changes a transaction amount without re-mining. Running validation after this should fail.
+This deliberately changes a transaction amount without recalculating the Merkle root or re-mining. Running validation after this should fail.
 
 ## End-to-End Example
 
@@ -301,9 +307,10 @@ A clean genesis-only chain contains:
       "timestamp": 0,
       "difficulty": 5,
       "transactions": [],
+      "merkle_root": "0000000000000000000000000000000000000000000000000000000000000000",
       "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
-      "nonce": 2795095,
-      "hash": "0000066df5eeb807e089b751c013567c6909e3e1450129c395c7b024607f6ce0"
+      "nonce": 2417102,
+      "hash": "0000050c5cad3e6cb229bb04eacc3c580834a93285f16f6dece119029021fcfd"
     }
   ],
   "pending": []
@@ -312,21 +319,22 @@ A clean genesis-only chain contains:
 
 ## Design Notes
 
-### Deterministic Hashing
+### Deterministic Hashing and Merkle Root
 
-A block hash is computed using SHA-256 over a stable canonical payload. The block’s own `Hash` field is excluded from the hash calculation.
+A block hash is computed using SHA-256 over a stable canonical block-header payload. The block's own `Hash` field is excluded from the hash calculation.
 
-The hash input includes:
+The block hash input includes:
 
-1. block height
-2. Unix timestamp
-3. difficulty
-4. previous block hash
-5. nonce
-6. transaction count
-7. each transaction in order
+1. block height,
+2. Unix timestamp,
+3. difficulty,
+4. previous block hash,
+5. Merkle root,
+6. nonce.
 
-For each transaction, the hash input includes transaction ID, sender, recipient, amount, creation timestamp, memo, transaction nonce, public key, and signature.
+The Merkle root commits to the full transaction list. Each transaction is hashed into a leaf using transaction ID, sender, recipient, amount, creation timestamp, memo, transaction nonce, public key, and signature. Leaf hashes are paired and hashed upward until one root remains. If a level has an odd number of hashes, the final hash is duplicated for that level.
+
+Changing any transaction changes its transaction hash, which changes the Merkle root, which then invalidates the block hash unless the block is rebuilt and re-mined.
 
 ### Wallets and Signatures
 
@@ -340,7 +348,7 @@ During validation:
 4. the nonce is checked against the expected sender nonce,
 5. the ledger rules are applied.
 
-This prevents a user from creating a transaction from someone else’s address without the correct private key.
+This prevents a user from creating a transaction from someone else's address without the correct private key.
 
 ### Encrypted Wallet Storage
 
@@ -354,7 +362,7 @@ Balances are not stored as the source of truth. They are calculated by replaying
 
 ### Validation
 
-Validation fails fast and reports the first offending block. It checks canonical genesis, height sequence, stored hash, recomputed hash, proof-of-work, previous-hash links, timestamps, transaction syntax, transaction IDs, signatures, nonces, duplicate IDs, sufficient balances, and overflow rules.
+Validation fails fast and reports the first offending block. It checks canonical genesis, height sequence, stored Merkle root, stored hash, recomputed hash, proof-of-work, previous-hash links, timestamps, transaction syntax, transaction IDs, signatures, nonces, duplicate IDs, sufficient balances, and overflow rules.
 
 ## Known Constraints and Future Improvements
 
@@ -364,7 +372,7 @@ Current constraints:
 
 - no peer-to-peer network
 - no distributed consensus
-- no Merkle tree
+- no Merkle proof command yet
 - no fork choice rule
 - no real finality
 - no transaction fees
@@ -376,7 +384,7 @@ Useful future improvements:
 
 1. Use interactive hidden passphrase input.
 2. Replace the educational KDF with Argon2id or scrypt.
-3. Add Merkle roots and Merkle proof verification.
+3. Add Merkle proof generation and verification.
 4. Add a REST API for block and transaction lookup.
 5. Add peer-to-peer node communication.
 6. Add proof-of-authority or fork-resolution logic.

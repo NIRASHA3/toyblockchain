@@ -33,7 +33,7 @@ func TestCLIPrintShowsChainDetails(t *testing.T) {
 		"Block 0",
 		"Block 1",
 		"hash:",
-		"tx_count:   1",
+		"tx_count:    1",
 		"[0] FAUCET -> alice amount=100",
 		"memo=\"faucet funding\"",
 	}

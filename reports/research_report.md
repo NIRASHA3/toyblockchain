@@ -2,38 +2,37 @@
 
 ## 1. Project scope and problem analysis
 
-This project implements a local command-line blockchain and ledger simulator in pure Go. The goal is to demonstrate the internal behaviour of a small blockchain, including deterministic block hashing, proof-of-work mining, ledger replay, tamper detection, JSON persistence, and transaction validation.
+This project implements a local command-line blockchain and ledger simulator in pure Go. The goal is to demonstrate the internal behaviour of a small blockchain, including deterministic block hashing, proof-of-work mining, ledger replay, tamper detection, JSON persistence, transaction validation, wallet-based signatures, and Merkle-root-based transaction commitment.
 
-The latest improvement adds wallet-based signed transactions. Earlier versions used simple account names, which proved ledger behaviour but did not prove transaction ownership. The updated version derives account addresses from Ed25519 public keys and requires normal transfers to be signed by the sender wallet.
+The latest improvement adds a Merkle root to every block. Earlier versions hashed every transaction directly inside the block hash payload. The updated version hashes transactions into a Merkle tree and stores the resulting Merkle root in the block header. This is closer to how production blockchains commit to transaction lists. Merkle proof generation is intentionally left for the next commit so the reviewer can see the Merkle root change separately.
 
 ## 2. Architecture
 
 The project is organised as a small Go module:
 
 - `cmd/toychain`: command-line interface and output formatting.
-- `internal/blockchain`: domain logic for blocks, transactions, wallets, mining, validation, balances, and persistence.
+- `internal/blockchain`: domain logic for blocks, transactions, wallets, Merkle roots, mining, validation, balances, and persistence.
 
 The main types are:
 
 - `Wallet`: Ed25519 key pair and derived address.
 - `Transaction`: sender, recipient, amount, creation time, memo, nonce, public key, signature, and deterministic ID.
-- `Block`: height, Unix timestamp, difficulty, transaction list, previous block hash, nonce, and own hash.
+- `Block`: height, Unix timestamp, difficulty, transaction list, Merkle root, previous block hash, nonce, and own hash.
 - `State`: confirmed chain plus pending transaction pool.
 - `LedgerState`: replayed balances, sender nonces, and seen transaction IDs.
 
 ## 3. Hashing scheme
 
-A block hash is computed using SHA-256 over a canonical byte payload. The block's own `Hash` field is excluded. The field order is:
+A block hash is computed using SHA-256 over a canonical block-header byte payload. The block's own `Hash` field is excluded. The field order is:
 
 1. block height,
 2. Unix timestamp,
 3. difficulty,
 4. previous block hash,
-5. nonce,
-6. transaction count,
-7. for each transaction in order: transaction index, transaction ID, sender, recipient, amount, creation timestamp, memo, transaction nonce, public key, and signature.
+5. Merkle root,
+6. nonce.
 
-String values are length-prefixed before their content is written. This avoids ambiguity such as `ab` + `c` producing the same textual stream as `a` + `bc`.
+The transaction list is no longer directly serialised into the block hash payload. Instead, every transaction is hashed into a Merkle leaf. Each leaf commits to the transaction ID, sender, recipient, amount, creation timestamp, memo, transaction nonce, public key, and signature. Leaf hashes are paired and hashed upward until one Merkle root remains. If a level has an odd number of hashes, the final hash is duplicated for that level.
 
 The transaction ID is also deterministic. It is computed from the transaction signing payload plus the signature. The signing payload excludes the transaction ID and signature, preventing circular hashing.
 
@@ -63,7 +62,8 @@ Because the project keeps to the standard library, the passphrase-derived encryp
 Validation scans the chain from block 0 to the tip and fails fast on the first offending block. It checks:
 
 - height equals the block's position in the slice,
-- recomputed hash equals stored hash,
+- recomputed Merkle root equals the stored Merkle root,
+- recomputed block hash equals the stored block hash,
 - hash satisfies the block's stored proof-of-work difficulty,
 - genesis block matches the fixed canonical genesis block,
 - every later block points to the previous block's stored hash,
@@ -76,7 +76,7 @@ Validation scans the chain from block 0 to the tip and fails fast on the first o
 - every non-faucet transaction has sufficient sender balance,
 - balance overflow is prevented before mutating balances.
 
-Because validation replays the ledger while checking the chain, it detects both structural tampering and business-rule violations.
+Because validation recomputes the Merkle root and replays the ledger, it detects both structural tampering and business-rule violations.
 
 ## 7. Go feature choices
 
@@ -124,12 +124,12 @@ After tampering:
 
 ```text
 tampered block=1 tx=0 amount 100 -> 999; run validate to see detection
-INVALID: block 1 failed hash check: stored hash does not match recomputed hash
+INVALID: block 1 failed merkle root check: stored merkle root does not match recomputed root
 ```
 
 ### Explanation
 
-The transaction amount is part of the block's canonical hash payload. Changing the amount changes the recomputed hash. The stored block hash remains the old mined hash, so validation fails at the first altered block during the hash check.
+The transaction amount is part of the transaction hash leaf. Changing the amount changes the transaction hash, which changes the recomputed Merkle root. The stored Merkle root remains the old value, so validation fails at the Merkle root check before the block hash check.
 
 ## 9. Experiment 2: difficulty versus effort
 
@@ -147,11 +147,11 @@ Example single-worker mining trend:
 
 The trend is not linear in the difficulty number. The expected work grows exponentially because each extra zero hex digit adds another 1-in-16 condition.
 
-## 10. Discussion
+## 11. Discussion
 
 ### Why previous-hash links make old tampering impractical in real chains
 
-In this local toy, a user can edit the JSON file and, with enough time, re-mine the changed block and every following block. In a real chain, old tampering is impractical because the attacker must redo the proof-of-work for the modified block and then catch up with and overtake the honest network's continuing work.
+In this local toy, a user can edit the JSON file and, with enough time, recompute the Merkle root and re-mine the changed block and every following block. In a real chain, old tampering is impractical because the attacker must redo the proof-of-work for the modified block and then catch up with and overtake the honest network's continuing work.
 
 ### Alternative to proof-of-work
 
@@ -162,12 +162,12 @@ Another simple private-network alternative is proof-of-authority, where known au
 ### Three ways this toy differs from production blockchains
 
 1. **No distributed consensus.** This program has one local chain file. Production blockchains must handle many nodes, forks, propagation delays, and adversarial participants.
-2. **No Merkle tree.** The block hashes the full transaction list directly. Production chains usually store a Merkle root so transaction inclusion can be verified efficiently.
-3. **No peer-to-peer network.** Transactions and blocks are not propagated between nodes.
+2. **No peer-to-peer network.** Transactions and blocks are not propagated between nodes.
+3. **No fork choice rule.** If two different valid histories are created locally, the program does not implement a network rule to choose the canonical one.
 
-If extending one area next, a Merkle tree would be useful. Each transaction would be hashed into a leaf, pairs of hashes would be combined, and the final Merkle root would be included in the block hash. This would allow transaction inclusion proofs.
+The project now includes a Merkle root, but Merkle proof generation is planned as the next improvement.
 
-## 11. Constraints and future improvements
+## 12. Constraints and future improvements
 
 This implementation is suitable for a local CLI blockchain learning project. It is not production money software.
 
@@ -175,7 +175,7 @@ Current constraints:
 
 - no peer-to-peer network,
 - no distributed consensus,
-- no Merkle tree,
+- no Merkle proof command yet,
 - no fork choice rule,
 - no transaction fees,
 - no smart contracts,
@@ -186,7 +186,7 @@ Future improvements:
 
 1. Use interactive hidden passphrase input.
 2. Replace the educational KDF with Argon2id or scrypt.
-3. Add Merkle roots and Merkle proof verification.
+3. Add Merkle proof generation and verification.
 4. Add a REST API for block and transaction lookup.
 5. Add peer-to-peer node communication.
 6. Add proof-of-authority or fork-resolution logic.

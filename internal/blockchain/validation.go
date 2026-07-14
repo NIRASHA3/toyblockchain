@@ -76,6 +76,15 @@ func validateBlockIntegrity(block Block, index int) error {
 		)
 	}
 
+	computedMerkleRoot := ComputeMerkleRoot(block.Transactions)
+	if block.MerkleRoot != computedMerkleRoot {
+		return newValidationError(
+			block.Height,
+			"merkle root",
+			fmt.Errorf("stored merkle root does not match recomputed root"),
+		)
+	}
+
 	if block.ComputeHash() != block.Hash {
 		return newValidationError(
 			block.Height,
@@ -109,6 +118,7 @@ func isCanonicalGenesis(block Block, expected Block) bool {
 		block.Timestamp == expected.Timestamp &&
 		block.Difficulty == expected.Difficulty &&
 		block.PrevHash == expected.PrevHash &&
+		block.MerkleRoot == expected.MerkleRoot &&
 		block.Nonce == expected.Nonce &&
 		block.Hash == expected.Hash &&
 		len(block.Transactions) == 0

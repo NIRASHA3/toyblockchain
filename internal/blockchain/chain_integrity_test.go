@@ -75,7 +75,7 @@ func TestValidateChainDetectsPreviousHashLinkMismatch(t *testing.T) {
 
 func TestValidateChainDetectsStoredHashMismatch(t *testing.T) {
 	state := buildTwoBlockTestChain(t)
-	state.Chain[1].Transactions[0].Amount = 999
+	state.Chain[1].Nonce++
 	err := ValidateChain(state.Chain, 1)
 	if err == nil {
 		t.Fatal("chain with stored hash mismatch unexpectedly validated")

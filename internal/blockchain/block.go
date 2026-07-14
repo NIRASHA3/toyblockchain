@@ -16,6 +16,7 @@ type Block struct {
 	Timestamp    int64         `json:"timestamp"`
 	Difficulty   int           `json:"difficulty"`
 	Transactions []Transaction `json:"transactions"`
+	MerkleRoot   string        `json:"merkle_root"`
 	PrevHash     string        `json:"prev_hash"`
 	Nonce        uint64        `json:"nonce"`
 	Hash         string        `json:"hash"`
@@ -28,6 +29,7 @@ func NewGenesisBlock() Block {
 		Timestamp:    0,
 		Difficulty:   MaxDifficulty,
 		Transactions: []Transaction{},
+		MerkleRoot:   EmptyMerkleRoot,
 		PrevHash:     GenesisPreviousHash,
 		Nonce:        GenesisNonce,
 		Hash:         GenesisHash,
@@ -43,13 +45,14 @@ func NewCandidateBlock(prev Block, transactions []Transaction, now time.Time, di
 		Timestamp:    now.Unix(),
 		Difficulty:   difficulty,
 		Transactions: copied,
+		MerkleRoot:   ComputeMerkleRoot(copied),
 		PrevHash:     prev.Hash,
 	}
 }
 
-// ComputeHash calculates SHA-256 over a stable serialisation of every block
-// field except Hash. The block difficulty is included so the proof-of-work
-// target cannot be altered without changing the block hash.
+// ComputeHash calculates SHA-256 over a stable serialisation of the block
+// header fields except Hash. The Merkle root commits to the transaction list,
+// so the block hash does not directly serialise every transaction.
 func (b Block) ComputeHash() string {
 	payload := b.canonicalPayload()
 	sum := sha256.Sum256(payload)
@@ -61,21 +64,9 @@ func (b Block) canonicalPayload() []byte {
 	fmt.Fprintf(&buf, "height=%d\n", b.Height)
 	fmt.Fprintf(&buf, "timestamp=%d\n", b.Timestamp)
 	fmt.Fprintf(&buf, "difficulty=%d\n", b.Difficulty)
-	fmt.Fprintf(&buf, "prev_hash=%s\n", b.PrevHash)
+	writeCanonicalString(&buf, "prev_hash", b.PrevHash)
+	writeCanonicalString(&buf, "merkle_root", b.MerkleRoot)
 	fmt.Fprintf(&buf, "nonce=%d\n", b.Nonce)
-	fmt.Fprintf(&buf, "tx_count=%d\n", len(b.Transactions))
-	for i, tx := range b.Transactions {
-		fmt.Fprintf(&buf, "tx_index=%d\n", i)
-		writeCanonicalString(&buf, "id", tx.ID)
-		writeCanonicalString(&buf, "from", tx.From)
-		writeCanonicalString(&buf, "to", tx.To)
-		fmt.Fprintf(&buf, "amount=%d\n", tx.Amount)
-		fmt.Fprintf(&buf, "created_at=%d\n", tx.CreatedAt)
-		writeCanonicalString(&buf, "memo", tx.Memo)
-		fmt.Fprintf(&buf, "tx_nonce=%d\n", tx.Nonce)
-		writeCanonicalString(&buf, "public_key", tx.PublicKey)
-		writeCanonicalString(&buf, "signature", tx.Signature)
-	}
 	return buf.Bytes()
 }
 

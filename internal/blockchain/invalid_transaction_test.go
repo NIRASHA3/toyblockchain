@@ -190,6 +190,7 @@ func TestRejectDuplicateTransactionID(t *testing.T) {
 	}
 
 	state.Chain[2].Transactions = append(state.Chain[2].Transactions, spend)
+	state.Chain[2].MerkleRoot = ComputeMerkleRoot(state.Chain[2].Transactions)
 	state.Chain[2].Hash = state.Chain[2].ComputeHash()
 	for !MeetsDifficulty(state.Chain[2].Hash, state.Chain[2].Difficulty) {
 		state.Chain[2].Nonce++

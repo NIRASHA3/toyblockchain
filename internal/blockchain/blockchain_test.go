@@ -97,8 +97,8 @@ func TestTamperingDetected(t *testing.T) {
 		t.Fatal("tampered chain unexpectedly valid")
 	}
 	var validationErr *ValidationError
-	if !errors.As(err, &validationErr) || validationErr.Check != "hash" || validationErr.Height != 1 {
-		t.Fatalf("error = %v, want hash validation error at block 1", err)
+	if !errors.As(err, &validationErr) || validationErr.Check != "merkle root" || validationErr.Height != 1 {
+		t.Fatalf("error = %v, want merkle root validation error at block 1", err)
 	}
 }
 

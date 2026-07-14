@@ -5,10 +5,10 @@ const (
 	GenesisPreviousHash = "0000000000000000000000000000000000000000000000000000000000000000"
 
 	// The genesis nonce/hash are precomputed from the canonical block payload at
-	// height 0, timestamp 0, difficulty MaxDifficulty, no transactions.
+	// height 0, timestamp 0, difficulty MaxDifficulty, no transactions, and the empty Merkle root.
 	// Keeping these constants fixed makes the genesis block tamper-evident.
-	GenesisNonce uint64 = 2795095
-	GenesisHash         = "0000066df5eeb807e089b751c013567c6909e3e1450129c395c7b024607f6ce0"
+	GenesisNonce uint64 = 2417102
+	GenesisHash         = "0000050c5cad3e6cb229bb04eacc3c580834a93285f16f6dece119029021fcfd"
 
 	FaucetAccount = "FAUCET"
 

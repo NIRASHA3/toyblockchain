@@ -265,10 +265,11 @@ func cmdPrint(args []string, cfg cliConfig, bcfg blockchain.Config, stdout, stde
 		fmt.Fprintf(stdout, "Block %d\n", block.Height)
 		fmt.Fprintf(stdout, "  timestamp:  %d\n", block.Timestamp)
 		fmt.Fprintf(stdout, "  difficulty: %d\n", block.Difficulty)
-		fmt.Fprintf(stdout, "  prev_hash:  %s\n", block.PrevHash)
-		fmt.Fprintf(stdout, "  nonce:      %d\n", block.Nonce)
-		fmt.Fprintf(stdout, "  hash:       %s\n", block.Hash)
-		fmt.Fprintf(stdout, "  tx_count:   %d\n", len(block.Transactions))
+		fmt.Fprintf(stdout, "  prev_hash:   %s\n", block.PrevHash)
+		fmt.Fprintf(stdout, "  merkle_root: %s\n", block.MerkleRoot)
+		fmt.Fprintf(stdout, "  nonce:       %d\n", block.Nonce)
+		fmt.Fprintf(stdout, "  hash:        %s\n", block.Hash)
+		fmt.Fprintf(stdout, "  tx_count:    %d\n", len(block.Transactions))
 		for i, tx := range block.Transactions {
 			fmt.Fprintf(stdout, "    [%d] %s -> %s amount=%d nonce=%d id=%s memo=%q\n", i, tx.From, tx.To, tx.Amount, tx.Nonce, short(tx.ID), tx.Memo)
 		}
