@@ -160,3 +160,50 @@ func TestCLIWalletNewShowAndSignedTransfer(t *testing.T) {
 		t.Fatalf("balances output missing wallet addresses: %q", out.String())
 	}
 }
+
+func TestCLIMerkleProofCommand(t *testing.T) {
+	base := t.TempDir()
+	aliceWallet := base + "/alice.wallet.json"
+	bobWallet := base + "/bob.wallet.json"
+	chainPath := base + "/chain.json"
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+
+	if err := run([]string{"wallet", "new", "-out", aliceWallet, "-passphrase", "alice-pass"}, &out, &errOut); err != nil {
+		t.Fatalf("wallet new alice: %v", err)
+	}
+	out.Reset()
+	if err := run([]string{"wallet", "new", "-out", bobWallet, "-passphrase", "bob-pass"}, &out, &errOut); err != nil {
+		t.Fatalf("wallet new bob: %v", err)
+	}
+	aliceMeta, err := blockchain.ReadWalletMetadata(aliceWallet)
+	if err != nil {
+		t.Fatalf("read alice metadata: %v", err)
+	}
+	bobMeta, err := blockchain.ReadWalletMetadata(bobWallet)
+	if err != nil {
+		t.Fatalf("read bob metadata: %v", err)
+	}
+
+	commands := [][]string{
+		{"-data", chainPath, "-difficulty", "1", "init", "-force"},
+		{"-data", chainPath, "-difficulty", "1", "faucet", "-to", aliceMeta.Address, "-amount", "100"},
+		{"-data", chainPath, "-difficulty", "1", "mine"},
+		{"-data", chainPath, "-difficulty", "1", "tx", "-wallet", aliceWallet, "-passphrase", "alice-pass", "-to", bobMeta.Address, "-amount", "40"},
+		{"-data", chainPath, "-difficulty", "1", "mine"},
+	}
+	for _, args := range commands {
+		if err := run(args, &out, &errOut); err != nil {
+			t.Fatalf("run %v: %v", args, err)
+		}
+	}
+
+	out.Reset()
+	if err := run([]string{"-data", chainPath, "-difficulty", "1", "merkle-proof", "-height", "2", "-tx", "0"}, &out, &errOut); err != nil {
+		t.Fatalf("merkle-proof: %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "\"valid\": true") || !strings.Contains(got, "\"merkle_root\"") || !strings.Contains(got, "\"proof\"") {
+		t.Fatalf("merkle-proof output missing expected fields: %q", got)
+	}
+}

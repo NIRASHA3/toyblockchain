@@ -4,7 +4,7 @@
 
 This project implements a local command-line blockchain and ledger simulator in pure Go. The goal is to demonstrate the internal behaviour of a small blockchain, including deterministic block hashing, proof-of-work mining, ledger replay, tamper detection, JSON persistence, transaction validation, wallet-based signatures, and Merkle-root-based transaction commitment.
 
-The latest improvement adds a Merkle root to every block. Earlier versions hashed every transaction directly inside the block hash payload. The updated version hashes transactions into a Merkle tree and stores the resulting Merkle root in the block header. This is closer to how production blockchains commit to transaction lists. Merkle proof generation is intentionally left for the next commit so the reviewer can see the Merkle root change separately.
+The latest improvement adds a Merkle root to every block. Earlier versions hashed every transaction directly inside the block hash payload. The updated version hashes transactions into a Merkle tree and stores the resulting Merkle root in the block header. This is closer to how production blockchains commit to transaction lists. The second part of the phase adds Merkle proof generation and verification so a selected transaction can be proven against the stored block root.
 
 ## 2. Architecture
 
@@ -20,6 +20,7 @@ The main types are:
 - `Block`: height, Unix timestamp, difficulty, transaction list, Merkle root, previous block hash, nonce, and own hash.
 - `State`: confirmed chain plus pending transaction pool.
 - `LedgerState`: replayed balances, sender nonces, and seen transaction IDs.
+- `MerkleProofStep`: one sibling hash and its left/right position in a Merkle proof path.
 
 ## 3. Hashing scheme
 
@@ -35,6 +36,8 @@ A block hash is computed using SHA-256 over a canonical block-header byte payloa
 The transaction list is no longer directly serialised into the block hash payload. Instead, every transaction is hashed into a Merkle leaf. Each leaf commits to the transaction ID, sender, recipient, amount, creation timestamp, memo, transaction nonce, public key, and signature. Leaf hashes are paired and hashed upward until one Merkle root remains. If a level has an odd number of hashes, the final hash is duplicated for that level.
 
 The transaction ID is also deterministic. It is computed from the transaction signing payload plus the signature. The signing payload excludes the transaction ID and signature, preventing circular hashing.
+
+Merkle proof generation starts at a selected transaction leaf and records the sibling hash at every tree level. During verification, the transaction hash is combined with each sibling according to its left/right position until a root is reconstructed. The reconstructed root must equal the block's stored Merkle root.
 
 ## 4. Wallets and digital signatures
 
@@ -75,6 +78,7 @@ Validation scans the chain from block 0 to the tip and fails fast on the first o
 - duplicate transaction IDs are rejected,
 - every non-faucet transaction has sufficient sender balance,
 - balance overflow is prevented before mutating balances.
+- Merkle proofs can be generated and locally verified for selected transactions.
 
 Because validation recomputes the Merkle root and replays the ledger, it detects both structural tampering and business-rule violations.
 
@@ -147,6 +151,41 @@ Example single-worker mining trend:
 
 The trend is not linear in the difficulty number. The expected work grows exponentially because each extra zero hex digit adds another 1-in-16 condition.
 
+## 10. Experiment 3: Merkle proof generation
+
+### Setup
+
+Commands used after creating a chain with at least one transaction in block 2:
+
+```bash
+./toychain -data demo.json -difficulty 3 merkle-proof -height 2 -tx 0
+```
+
+### Observed output
+
+The command prints JSON similar to:
+
+```json
+{
+  "block_height": 2,
+  "transaction_index": 0,
+  "transaction_id": "...",
+  "transaction_hash": "...",
+  "merkle_root": "...",
+  "proof": [
+    {
+      "position": "right",
+      "hash": "..."
+    }
+  ],
+  "valid": true
+}
+```
+
+### Explanation
+
+The proof contains only the sibling hashes needed to reconstruct the Merkle root for the selected transaction. If the transaction hash, proof path, or Merkle root is changed, verification returns false. This demonstrates how block membership can be checked without re-hashing every transaction in the block.
+
 ## 11. Discussion
 
 ### Why previous-hash links make old tampering impractical in real chains
@@ -165,7 +204,7 @@ Another simple private-network alternative is proof-of-authority, where known au
 2. **No peer-to-peer network.** Transactions and blocks are not propagated between nodes.
 3. **No fork choice rule.** If two different valid histories are created locally, the program does not implement a network rule to choose the canonical one.
 
-The project now includes a Merkle root, but Merkle proof generation is planned as the next improvement.
+The project now includes a Merkle root and a proof command, but it still stores the full transactions inside each local block file.
 
 ## 12. Constraints and future improvements
 
@@ -175,7 +214,6 @@ Current constraints:
 
 - no peer-to-peer network,
 - no distributed consensus,
-- no Merkle proof command yet,
 - no fork choice rule,
 - no transaction fees,
 - no smart contracts,
@@ -186,11 +224,10 @@ Future improvements:
 
 1. Use interactive hidden passphrase input.
 2. Replace the educational KDF with Argon2id or scrypt.
-3. Add Merkle proof generation and verification.
-4. Add a REST API for block and transaction lookup.
-5. Add peer-to-peer node communication.
-6. Add proof-of-authority or fork-resolution logic.
-7. Add difficulty retargeting.
+3. Add a REST API for block and transaction lookup.
+4. Add peer-to-peer node communication.
+5. Add proof-of-authority or fork-resolution logic.
+6. Add difficulty retargeting.
 
 ## References
 

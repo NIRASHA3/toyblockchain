@@ -12,6 +12,7 @@ This project is intentionally local and educational. It does not connect to any 
 - Per-block stored difficulty
 - Merkle root stored in every block
 - Transaction hash leaves and deterministic Merkle root calculation
+- Merkle proof generation and verification
 - Faucet-funded account model
 - Encrypted Ed25519 wallet generation
 - Public-key-derived wallet addresses
@@ -111,7 +112,7 @@ go vet ./...
 go build -o toychain.exe ./cmd/toychain
 ```
 
-The automated tests cover deterministic hashing, canonical genesis validation, Merkle root calculation, Merkle-root tamper detection, proof-of-work target checks, signed transaction validation, wallet encryption/decryption, wrong-passphrase rejection, nonce validation, duplicate transaction rejection, invalid amount rejection, overspending rejection, pending-pool overspending rejection, previous-hash-link validation, JSON persistence, CLI error handling, and tamper detection.
+The automated tests cover deterministic hashing, canonical genesis validation, Merkle root calculation, Merkle-root tamper detection, Merkle proof generation/verification, proof-of-work target checks, signed transaction validation, wallet encryption/decryption, wrong-passphrase rejection, nonce validation, duplicate transaction rejection, invalid amount rejection, overspending rejection, pending-pool overspending rejection, previous-hash-link validation, JSON persistence, CLI error handling, and tamper detection.
 
 ## Command-Line Usage
 
@@ -217,6 +218,14 @@ Validation checks block structure, canonical genesis, stored hashes, recomputed 
 
 Printed blocks include height, timestamp, difficulty, previous hash, Merkle root, nonce, block hash, and transaction count.
 
+### Generate a Merkle Proof
+
+```powershell
+.\toychain.exe -data demo.json -difficulty 3 merkle-proof -height 2 -tx 0
+```
+
+The command prints JSON containing the block height, transaction index, transaction ID, transaction hash, Merkle root, sibling proof path, and a `valid` boolean produced by local proof verification.
+
 ### Tamper with a Transaction
 
 ```powershell
@@ -252,6 +261,7 @@ Copy the two addresses, then run:
 .\toychain.exe -data demo.json -difficulty 3 balances
 .\toychain.exe -data demo.json -difficulty 3 validate
 .\toychain.exe -data demo.json -difficulty 3 print
+.\toychain.exe -data demo.json -difficulty 3 merkle-proof -height 2 -tx 0
 ```
 
 Expected final balances:
@@ -336,6 +346,12 @@ The Merkle root commits to the full transaction list. Each transaction is hashed
 
 Changing any transaction changes its transaction hash, which changes the Merkle root, which then invalidates the block hash unless the block is rebuilt and re-mined.
 
+### Merkle Proofs
+
+A Merkle proof is a small list of sibling hashes that proves a transaction belongs to a block's Merkle root. The verifier starts from the transaction hash and combines it with each sibling hash in the correct left/right order until a root is reconstructed. If the reconstructed root equals the block's stored Merkle root, the transaction is included in that block.
+
+The CLI command `merkle-proof` demonstrates this by building a proof for a selected block height and transaction index, then verifying it locally before printing the JSON result.
+
 ### Wallets and Signatures
 
 Each wallet uses an Ed25519 public/private key pair. The account address is derived from the public key. A transfer transaction contains the sender address, recipient address, amount, nonce, public key, and signature.
@@ -372,7 +388,6 @@ Current constraints:
 
 - no peer-to-peer network
 - no distributed consensus
-- no Merkle proof command yet
 - no fork choice rule
 - no real finality
 - no transaction fees
@@ -384,11 +399,10 @@ Useful future improvements:
 
 1. Use interactive hidden passphrase input.
 2. Replace the educational KDF with Argon2id or scrypt.
-3. Add Merkle proof generation and verification.
-4. Add a REST API for block and transaction lookup.
-5. Add peer-to-peer node communication.
-6. Add proof-of-authority or fork-resolution logic.
-7. Add difficulty retargeting.
+3. Add a REST API for block and transaction lookup.
+4. Add peer-to-peer node communication.
+5. Add proof-of-authority or fork-resolution logic.
+6. Add difficulty retargeting.
 
 ## Research Report
 

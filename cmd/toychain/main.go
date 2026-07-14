@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -86,6 +87,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return cmdBalances(commandArgs, cfg, bcfg, stdout, stderr)
 	case "pending":
 		return cmdPending(commandArgs, cfg, bcfg, stdout, stderr)
+	case "merkle-proof":
+		return cmdMerkleProof(commandArgs, cfg, bcfg, stdout, stderr)
 	case "tamper":
 		return cmdTamper(commandArgs, cfg, bcfg, stdout, stderr)
 	default:
@@ -339,6 +342,57 @@ func cmdPending(args []string, cfg cliConfig, bcfg blockchain.Config, stdout, st
 	return nil
 }
 
+func cmdMerkleProof(args []string, cfg cliConfig, bcfg blockchain.Config, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("merkle-proof", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	height := fs.Int("height", -1, "block height")
+	txIndex := fs.Int("tx", -1, "transaction index inside the block")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	state, err := loadValidState(cfg, bcfg)
+	if err != nil {
+		return err
+	}
+	if *height < 0 || *height >= len(state.Chain) {
+		return fmt.Errorf("height %d out of range", *height)
+	}
+	block := state.Chain[*height]
+	if *txIndex < 0 || *txIndex >= len(block.Transactions) {
+		return fmt.Errorf("transaction index %d out of range for block %d", *txIndex, *height)
+	}
+
+	tx := block.Transactions[*txIndex]
+	txHash := blockchain.TransactionHash(tx)
+	proof, err := blockchain.BuildMerkleProof(block.Transactions, *txIndex)
+	if err != nil {
+		return err
+	}
+
+	result := struct {
+		BlockHeight      int                          `json:"block_height"`
+		TransactionIndex int                          `json:"transaction_index"`
+		TransactionID    string                       `json:"transaction_id"`
+		TransactionHash  string                       `json:"transaction_hash"`
+		MerkleRoot       string                       `json:"merkle_root"`
+		Proof            []blockchain.MerkleProofStep `json:"proof"`
+		Valid            bool                         `json:"valid"`
+	}{
+		BlockHeight:      block.Height,
+		TransactionIndex: *txIndex,
+		TransactionID:    tx.ID,
+		TransactionHash:  txHash,
+		MerkleRoot:       block.MerkleRoot,
+		Proof:            proof,
+		Valid:            blockchain.VerifyMerkleProof(txHash, proof, block.MerkleRoot),
+	}
+
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(result)
+}
+
 func cmdTamper(args []string, cfg cliConfig, bcfg blockchain.Config, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("tamper", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -403,6 +457,7 @@ Commands:
   validate                                    validate chain integrity
   balances [-pending]                         show account balances
   pending                                     list pending transactions
+  merkle-proof -height N -tx I                print a transaction Merkle proof
   tamper -height N -tx I -amount N            deliberately alter stored data for demo`))
 }
 
