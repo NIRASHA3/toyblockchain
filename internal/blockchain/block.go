@@ -72,6 +72,9 @@ func (b Block) canonicalPayload() []byte {
 		fmt.Fprintf(&buf, "amount=%d\n", tx.Amount)
 		fmt.Fprintf(&buf, "created_at=%d\n", tx.CreatedAt)
 		writeCanonicalString(&buf, "memo", tx.Memo)
+		fmt.Fprintf(&buf, "tx_nonce=%d\n", tx.Nonce)
+		writeCanonicalString(&buf, "public_key", tx.PublicKey)
+		writeCanonicalString(&buf, "signature", tx.Signature)
 	}
 	return buf.Bytes()
 }

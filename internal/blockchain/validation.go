@@ -3,7 +3,8 @@ package blockchain
 import "fmt"
 
 // ValidateChain verifies hashes, links, per-block proof-of-work, heights,
-// timestamps, the canonical genesis block, and ledger rules.
+// timestamps, the canonical genesis block, duplicate transactions, signatures,
+// nonces, and ledger rules.
 func ValidateChain(chain []Block, fallbackDifficulty int) error {
 	if err := validateFallbackDifficulty(fallbackDifficulty); err != nil {
 		return err
@@ -12,9 +13,9 @@ func ValidateChain(chain []Block, fallbackDifficulty int) error {
 		return err
 	}
 
-	balances := make(Balances)
+	ledger := NewLedgerState()
 	for i, block := range chain {
-		if err := validateBlockAtIndex(chain, i, block, balances); err != nil {
+		if err := validateBlockAtIndex(chain, i, block, ledger); err != nil {
 			return err
 		}
 	}
@@ -42,7 +43,7 @@ func validateChainNotEmpty(chain []Block) error {
 	return nil
 }
 
-func validateBlockAtIndex(chain []Block, index int, block Block, balances Balances) error {
+func validateBlockAtIndex(chain []Block, index int, block Block, ledger *LedgerState) error {
 	if err := validateBlockIntegrity(block, index); err != nil {
 		return err
 	}
@@ -51,7 +52,7 @@ func validateBlockAtIndex(chain []Block, index int, block Block, balances Balanc
 		return err
 	}
 
-	return validateBlockTransactions(block, balances)
+	return validateBlockTransactions(block, ledger)
 }
 
 func validateBlockPositionRules(chain []Block, index int, block Block) error {
@@ -161,9 +162,9 @@ func validateBlockChaining(block Block, index int, chain []Block) error {
 	return nil
 }
 
-func validateBlockTransactions(block Block, balances Balances) error {
+func validateBlockTransactions(block Block, ledger *LedgerState) error {
 	for _, tx := range block.Transactions {
-		if err := ApplyTransaction(balances, tx); err != nil {
+		if err := ledger.ApplyTransaction(tx); err != nil {
 			return newValidationError(block.Height, "ledger", err)
 		}
 	}

@@ -27,8 +27,6 @@ type cliConfig struct {
 
 func main() {
 	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
-		// The validate command already prints a clear INVALID line to stdout.
-		// Return exit code 1 without printing a second noisy error message.
 		if errors.Is(err, errValidationFailed) {
 			os.Exit(1)
 		}
@@ -70,6 +68,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return nil
+	case "wallet":
+		return cmdWallet(commandArgs, stdout, stderr)
 	case "init":
 		return cmdInit(commandArgs, cfg, bcfg, stdout, stderr)
 	case "faucet":
@@ -93,16 +93,62 @@ func run(args []string, stdout, stderr io.Writer) error {
 	}
 }
 
-func cmdInit(args []string, cfg cliConfig, _ blockchain.Config, stdout, stderr io.Writer) error {
-	fs := flag.NewFlagSet("init", flag.ContinueOnError)
+func cmdWallet(args []string, stdout, stderr io.Writer) error {
+	if len(args) == 0 {
+		printWalletUsage(stdout)
+		return nil
+	}
+	switch args[0] {
+	case "new":
+		return cmdWalletNew(args[1:], stdout, stderr)
+	case "show":
+		return cmdWalletShow(args[1:], stdout, stderr)
+	default:
+		return fmt.Errorf("unknown wallet command %q", args[0])
+	}
+}
+
+func cmdWalletNew(args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("wallet new", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-
-	force := fs.Bool("force", false, "overwrite existing state")
-
+	outPath := fs.String("out", "wallet.json", "encrypted wallet output file")
+	passphrase := fs.String("passphrase", "", "wallet encryption passphrase")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	wallet, err := blockchain.NewWallet()
+	if err != nil {
+		return err
+	}
+	if err := blockchain.SaveEncryptedWallet(*outPath, wallet, *passphrase); err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "created encrypted wallet %s\naddress: %s\n", *outPath, wallet.Address)
+	return nil
+}
 
+func cmdWalletShow(args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("wallet show", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	path := fs.String("path", "", "wallet file path")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	metadata, err := blockchain.ReadWalletMetadata(*path)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "address: %s\npublic_key: %s\n", metadata.Address, metadata.PublicKey)
+	return nil
+}
+
+func cmdInit(args []string, cfg cliConfig, _ blockchain.Config, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("init", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	force := fs.Bool("force", false, "overwrite existing state")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 	if !*force {
 		if _, err := os.Stat(cfg.dataPath); err == nil {
 			return fmt.Errorf("state file %q already exists; use init -force to overwrite", cfg.dataPath)
@@ -110,12 +156,10 @@ func cmdInit(args []string, cfg cliConfig, _ blockchain.Config, stdout, stderr i
 			return fmt.Errorf("stat state file %q: %w", cfg.dataPath, err)
 		}
 	}
-
 	state := blockchain.NewState()
 	if err := blockchain.SaveState(cfg.dataPath, state); err != nil {
 		return err
 	}
-
 	fmt.Fprintf(stdout, "initialised chain at %s with genesis hash %s\n", cfg.dataPath, state.Chain[0].Hash)
 	return nil
 }
@@ -123,33 +167,26 @@ func cmdInit(args []string, cfg cliConfig, _ blockchain.Config, stdout, stderr i
 func cmdFaucet(args []string, cfg cliConfig, bcfg blockchain.Config, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("faucet", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-
-	to := fs.String("to", "", "recipient account")
+	to := fs.String("to", "", "recipient wallet address")
 	amount := fs.Int64("amount", 0, "amount to mint")
 	memo := fs.String("memo", "faucet funding", "transaction memo")
-
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-
 	state, err := loadValidState(cfg, bcfg)
 	if err != nil {
 		return err
 	}
-
 	tx, err := blockchain.NewFaucet(*to, *amount, *memo, time.Now())
 	if err != nil {
 		return err
 	}
-
 	if err := state.AddPending(tx); err != nil {
 		return err
 	}
-
 	if err := blockchain.SaveState(cfg.dataPath, state); err != nil {
 		return err
 	}
-
 	fmt.Fprintf(stdout, "added faucet transaction %s: %s -> %s amount=%d\n", short(tx.ID), tx.From, tx.To, tx.Amount)
 	return nil
 }
@@ -157,63 +194,59 @@ func cmdFaucet(args []string, cfg cliConfig, bcfg blockchain.Config, stdout, std
 func cmdTransfer(args []string, cfg cliConfig, bcfg blockchain.Config, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("tx", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-
-	from := fs.String("from", "", "sender account")
-	to := fs.String("to", "", "recipient account")
+	walletPath := fs.String("wallet", "", "encrypted sender wallet file")
+	passphrase := fs.String("passphrase", "", "wallet passphrase")
+	to := fs.String("to", "", "recipient wallet address")
 	amount := fs.Int64("amount", 0, "amount to send")
 	memo := fs.String("memo", "", "transaction memo")
-
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-
 	state, err := loadValidState(cfg, bcfg)
 	if err != nil {
 		return err
 	}
-
-	tx, err := blockchain.NewTransfer(*from, *to, *amount, *memo, time.Now())
+	wallet, err := blockchain.LoadEncryptedWallet(*walletPath, *passphrase)
 	if err != nil {
 		return err
 	}
-
+	nonce, err := state.NextNonce(wallet.Address)
+	if err != nil {
+		return err
+	}
+	tx, err := blockchain.NewSignedTransfer(wallet, *to, *amount, nonce, *memo, time.Now())
+	if err != nil {
+		return err
+	}
 	if err := state.AddPending(tx); err != nil {
 		return err
 	}
-
 	if err := blockchain.SaveState(cfg.dataPath, state); err != nil {
 		return err
 	}
-
-	fmt.Fprintf(stdout, "added pending transaction %s: %s -> %s amount=%d\n", short(tx.ID), tx.From, tx.To, tx.Amount)
+	fmt.Fprintf(stdout, "added signed pending transaction %s: %s -> %s amount=%d nonce=%d\n", short(tx.ID), tx.From, tx.To, tx.Amount, tx.Nonce)
 	return nil
 }
 
 func cmdMine(args []string, cfg cliConfig, bcfg blockchain.Config, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("mine", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-
 	state, err := loadValidState(cfg, bcfg)
 	if err != nil {
 		return err
 	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.timeout)
 	defer cancel()
-
 	block, stats, err := state.MinePending(ctx, bcfg, time.Now())
 	if err != nil {
 		return err
 	}
-
 	if err := blockchain.SaveState(cfg.dataPath, state); err != nil {
 		return err
 	}
-
 	fmt.Fprintf(stdout, "mined block height=%d difficulty=%d hash=%s nonce=%d attempts=%d duration=%s workers=%d\n", block.Height, block.Difficulty, block.Hash, stats.Nonce, stats.Attempts, stats.Duration.Round(time.Millisecond), stats.Workers)
 	return nil
 }
@@ -221,16 +254,13 @@ func cmdMine(args []string, cfg cliConfig, bcfg blockchain.Config, stdout, stder
 func cmdPrint(args []string, cfg cliConfig, bcfg blockchain.Config, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("print", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-
 	state, err := loadValidState(cfg, bcfg)
 	if err != nil {
 		return err
 	}
-
 	for _, block := range state.Chain {
 		fmt.Fprintf(stdout, "Block %d\n", block.Height)
 		fmt.Fprintf(stdout, "  timestamp:  %d\n", block.Timestamp)
@@ -240,31 +270,26 @@ func cmdPrint(args []string, cfg cliConfig, bcfg blockchain.Config, stdout, stde
 		fmt.Fprintf(stdout, "  hash:       %s\n", block.Hash)
 		fmt.Fprintf(stdout, "  tx_count:   %d\n", len(block.Transactions))
 		for i, tx := range block.Transactions {
-			fmt.Fprintf(stdout, "    [%d] %s -> %s amount=%d id=%s memo=%q\n", i, tx.From, tx.To, tx.Amount, short(tx.ID), tx.Memo)
+			fmt.Fprintf(stdout, "    [%d] %s -> %s amount=%d nonce=%d id=%s memo=%q\n", i, tx.From, tx.To, tx.Amount, tx.Nonce, short(tx.ID), tx.Memo)
 		}
 	}
-
 	return nil
 }
 
 func cmdValidate(args []string, cfg cliConfig, bcfg blockchain.Config, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("validate", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-
 	state, err := blockchain.LoadState(cfg.dataPath)
 	if err != nil {
 		return err
 	}
-
 	if err := blockchain.ValidateChain(state.Chain, bcfg.Difficulty); err != nil {
 		fmt.Fprintf(stdout, "INVALID: %v\n", err)
 		return fmt.Errorf("%w: %v", errValidationFailed, err)
 	}
-
 	fmt.Fprintf(stdout, "VALID: %d blocks checked\n", len(state.Chain))
 	return nil
 }
@@ -272,18 +297,14 @@ func cmdValidate(args []string, cfg cliConfig, bcfg blockchain.Config, stdout, s
 func cmdBalances(args []string, cfg cliConfig, bcfg blockchain.Config, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("balances", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-
 	includePending := fs.Bool("pending", false, "include pending transactions")
-
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-
 	state, err := loadValidState(cfg, bcfg)
 	if err != nil {
 		return err
 	}
-
 	var balances blockchain.Balances
 	if *includePending {
 		balances, err = state.BalancesIncludingPending()
@@ -293,7 +314,6 @@ func cmdBalances(args []string, cfg cliConfig, bcfg blockchain.Config, stdout, s
 	if err != nil {
 		return err
 	}
-
 	printBalances(stdout, balances)
 	return nil
 }
@@ -301,60 +321,47 @@ func cmdBalances(args []string, cfg cliConfig, bcfg blockchain.Config, stdout, s
 func cmdPending(args []string, cfg cliConfig, bcfg blockchain.Config, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("pending", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-
 	state, err := loadValidState(cfg, bcfg)
 	if err != nil {
 		return err
 	}
-
 	if len(state.Pending) == 0 {
 		fmt.Fprintln(stdout, "no pending transactions")
 		return nil
 	}
-
 	for i, tx := range state.Pending {
-		fmt.Fprintf(stdout, "[%d] %s -> %s amount=%d id=%s memo=%q\n", i, tx.From, tx.To, tx.Amount, short(tx.ID), tx.Memo)
+		fmt.Fprintf(stdout, "[%d] %s -> %s amount=%d nonce=%d id=%s memo=%q\n", i, tx.From, tx.To, tx.Amount, tx.Nonce, short(tx.ID), tx.Memo)
 	}
-
 	return nil
 }
 
 func cmdTamper(args []string, cfg cliConfig, bcfg blockchain.Config, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("tamper", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-
 	height := fs.Int("height", 1, "block height to alter")
 	txIndex := fs.Int("tx", 0, "transaction index inside the block")
 	amount := fs.Int64("amount", 999999, "new amount to write without re-mining")
-
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-
 	state, err := loadValidState(cfg, bcfg)
 	if err != nil {
 		return err
 	}
-
 	if *height < 0 || *height >= len(state.Chain) {
 		return fmt.Errorf("height %d out of range", *height)
 	}
-
 	if *txIndex < 0 || *txIndex >= len(state.Chain[*height].Transactions) {
 		return fmt.Errorf("transaction index %d out of range for block %d", *txIndex, *height)
 	}
-
 	before := state.Chain[*height].Transactions[*txIndex].Amount
 	state.Chain[*height].Transactions[*txIndex].Amount = *amount
-
 	if err := blockchain.SaveState(cfg.dataPath, state); err != nil {
 		return err
 	}
-
 	fmt.Fprintf(stdout, "tampered block=%d tx=%d amount %d -> %d; run validate to see detection\n", *height, *txIndex, before, *amount)
 	return nil
 }
@@ -364,11 +371,9 @@ func loadValidState(cfg cliConfig, bcfg blockchain.Config) (blockchain.State, er
 	if err != nil {
 		return blockchain.State{}, err
 	}
-
 	if err := blockchain.ValidateChain(state.Chain, bcfg.Difficulty); err != nil {
 		return blockchain.State{}, fmt.Errorf("refusing to operate on invalid chain: %w", err)
 	}
-
 	return state, nil
 }
 
@@ -386,15 +391,24 @@ Global flags:
   -timeout duration   mining timeout (default 15s)
 
 Commands:
-  init [-force]                    create state file
-  faucet -to ACCOUNT -amount N     add funding transaction to pending pool
-  tx -from A -to B -amount N       add transfer transaction to pending pool
-  mine                             mine pending transactions into a block
-  print                            print readable chain
-  validate                         validate chain integrity
-  balances [-pending]              show account balances
-  pending                          list pending transactions
-  tamper -height N -tx I -amount N deliberately alter stored data for demo`))
+  wallet new -out FILE -passphrase PASS       create encrypted Ed25519 wallet
+  wallet show -path FILE                      show wallet address/public key
+  init [-force]                               create state file
+  faucet -to ADDRESS -amount N                add funding transaction to pending pool
+  tx -wallet FILE -passphrase PASS -to ADDRESS -amount N
+                                             add signed transfer to pending pool
+  mine                                        mine pending transactions into a block
+  print                                       print readable chain
+  validate                                    validate chain integrity
+  balances [-pending]                         show account balances
+  pending                                     list pending transactions
+  tamper -height N -tx I -amount N            deliberately alter stored data for demo`))
+}
+
+func printWalletUsage(w io.Writer) {
+	fmt.Fprintln(w, strings.TrimSpace(`wallet commands:
+  wallet new -out FILE -passphrase PASS
+  wallet show -path FILE`))
 }
 
 func printBalances(w io.Writer, balances blockchain.Balances) {
@@ -403,7 +417,6 @@ func printBalances(w io.Writer, balances blockchain.Balances) {
 		accounts = append(accounts, account)
 	}
 	sort.Strings(accounts)
-
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "ACCOUNT\tBALANCE")
 	for _, account := range accounts {

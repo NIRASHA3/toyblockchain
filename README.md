@@ -1,25 +1,31 @@
 # Toy Blockchain and Ledger Simulator
 
-A pure-Go command-line toy blockchain and ledger simulator that demonstrates deterministic block hashing, faucet-funded transactions, proof-of-work mining, full-chain validation, tamper detection, JSON persistence, and automated tests.
+A pure-Go command-line toy blockchain and ledger simulator that demonstrates deterministic block hashing, faucet-funded transactions, wallet-based signed transfers, proof-of-work mining, full-chain validation, tamper detection, encrypted wallet storage, JSON persistence, and automated tests.
 
-This project is intentionally small and local. It does not connect to any external blockchain network, peer node, wallet, RPC endpoint, or third-party blockchain SDK.
+This project is intentionally local and educational. It does not connect to any external blockchain network, peer node, RPC endpoint, or third-party blockchain SDK.
 
 ## Features
 
-- Deterministic genesis block
+- Deterministic canonical genesis block
 - SHA-256 block hashing
 - Previous-hash block linking
+- Per-block stored difficulty
 - Faucet-funded account model
-- Transfer transactions
+- Encrypted Ed25519 wallet generation
+- Public-key-derived wallet addresses
+- Signed transfer transactions
+- Transaction nonce validation and replay protection
+- Duplicate transaction ID detection
 - Pending transaction pool
 - Proof-of-work mining with configurable difficulty
 - Concurrent mining workers
 - Full-chain validation
 - Tamper detection
 - Balance calculation by replaying the chain
+- Balance overflow protection
 - JSON file persistence
 - Command-line interface
-- Unit tests for core blockchain behaviour
+- Unit tests for core blockchain and wallet behaviour
 
 ## Requirements
 
@@ -31,6 +37,8 @@ Check your Go version:
 go version
 ```
 
+The project uses only the Go standard library.
+
 ## Project Structure
 
 ```text
@@ -40,7 +48,6 @@ toyblockchain/
       main.go
       main_test.go
       cli_invalid_test.go
-      cli_coverage_test.go
   internal/
     blockchain/
       block.go
@@ -55,6 +62,9 @@ toyblockchain/
       storage.go
       transaction.go
       validation.go
+      wallet.go
+      wallet_test.go
+      test_helpers_test.go
   reports/
     research_report.md
   go.mod
@@ -81,7 +91,7 @@ Build the CLI:
 go build -o toychain ./cmd/toychain
 ```
 
-On Windows PowerShell, build with:
+On Windows PowerShell:
 
 ```powershell
 go build -o toychain.exe ./cmd/toychain
@@ -91,98 +101,75 @@ go build -o toychain.exe ./cmd/toychain
 
 The project was verified with:
 
-```bash
-go test ./...
-go vet ./...
-go build -o toychain ./cmd/toychain
-```
-
-On Windows PowerShell:
-
 ```powershell
 go test ./...
 go vet ./...
 go build -o toychain.exe ./cmd/toychain
 ```
 
-The automated tests cover:
-
-- deterministic genesis block creation
-- deterministic block hashing
-- proof-of-work target checks
-- honest-chain validation
-- tamper detection
-- zero amount rejection
-- negative amount rejection
-- overspending rejection
-- balance overflow rejection
-- pending-pool overspending rejection
-- transaction ID validation
-- previous-hash-link validation
-- JSON persistence
-- CLI error handling
+The automated tests cover deterministic hashing, canonical genesis validation, proof-of-work target checks, signed transaction validation, wallet encryption/decryption, wrong-passphrase rejection, nonce validation, duplicate transaction rejection, invalid amount rejection, overspending rejection, pending-pool overspending rejection, previous-hash-link validation, JSON persistence, CLI error handling, and tamper detection.
 
 ## Command-Line Usage
 
 General format:
 
 ```bash
-./toychain -data chain.json -difficulty 3 <command>
+./toychain -data chain.json -difficulty 3 COMMAND
 ```
 
 On Windows PowerShell:
 
 ```powershell
-.\toychain.exe -data chain.json -difficulty 3 <command>
+.\toychain.exe -data chain.json -difficulty 3 COMMAND
 ```
 
 Common flags:
 
 | Flag | Description | Default |
 |---|---|---|
-| `-data` | JSON file used to save and load blockchain state | `chain.json` |
+| `-data` | JSON file used to save and load blockchain state | `toychain.json` |
 | `-difficulty` | Number of leading zero hex digits required in mined block hash | `3` |
 | `-max-block-tx` | Maximum number of transactions included in one mined block | `5` |
 | `-workers` | Number of mining workers. If `0`, it uses available CPU count | `0` |
-| `-mine-timeout` | Mining timeout duration | `15s` |
+| `-timeout` | Mining timeout duration | `15s` |
 
-## Commands
+## Wallet Commands
 
-### Initialise a Chain
+### Create an Encrypted Wallet
 
-```bash
-./toychain -data demo.json -difficulty 3 init -force
+```powershell
+.\toychain.exe wallet new -out alice.wallet.json -passphrase alice-pass
+.\toychain.exe wallet new -out bob.wallet.json -passphrase bob-pass
 ```
 
-Windows PowerShell:
+Each wallet contains an Ed25519 public/private key pair. The private key is encrypted using AES-256-GCM with a standard-library-only passphrase-derived key.
+
+### Show Wallet Address
+
+```powershell
+.\toychain.exe wallet show -path alice.wallet.json
+.\toychain.exe wallet show -path bob.wallet.json
+```
+
+The output shows the wallet address and public key. The private key is not printed.
+
+## Blockchain Commands
+
+### Initialise a Chain
 
 ```powershell
 .\toychain.exe -data demo.json -difficulty 3 init -force
 ```
 
-This creates a new blockchain file with only the deterministic genesis block.
-
 ### Add Faucet Funds
 
-```bash
-./toychain -data demo.json -difficulty 3 faucet -to alice -amount 100
-```
-
-Windows PowerShell:
+Use the address from `wallet show`:
 
 ```powershell
-.\toychain.exe -data demo.json -difficulty 3 faucet -to alice -amount 100
+.\toychain.exe -data demo.json -difficulty 3 faucet -to ALICE_ADDRESS -amount 100
 ```
-
-This adds a pending faucet transaction that gives Alice 100 units.
 
 ### View Pending Transactions
-
-```bash
-./toychain -data demo.json -difficulty 3 pending
-```
-
-Windows PowerShell:
 
 ```powershell
 .\toychain.exe -data demo.json -difficulty 3 pending
@@ -190,39 +177,19 @@ Windows PowerShell:
 
 ### Mine Pending Transactions
 
-```bash
-./toychain -data demo.json -difficulty 3 mine
-```
-
-Windows PowerShell:
-
 ```powershell
 .\toychain.exe -data demo.json -difficulty 3 mine
 ```
 
-Mining searches for a nonce so that the block hash satisfies the configured difficulty target.
-
-### Add a Transfer Transaction
-
-```bash
-./toychain -data demo.json -difficulty 3 tx -from alice -to bob -amount 40
-```
-
-Windows PowerShell:
+### Add a Signed Transfer Transaction
 
 ```powershell
-.\toychain.exe -data demo.json -difficulty 3 tx -from alice -to bob -amount 40
+.\toychain.exe -data demo.json -difficulty 3 tx -wallet alice.wallet.json -passphrase alice-pass -to BOB_ADDRESS -amount 40
 ```
 
-The transaction is rejected if the sender does not have enough confirmed and available balance.
+The sender is derived from the wallet address. The transaction is signed using the decrypted private key. The chain validates the signature using the public key stored in the transaction.
 
 ### Show Balances
-
-```bash
-./toychain -data demo.json -difficulty 3 balances
-```
-
-Windows PowerShell:
 
 ```powershell
 .\toychain.exe -data demo.json -difficulty 3 balances
@@ -232,47 +199,19 @@ Balances are derived by replaying the confirmed chain from genesis to the latest
 
 ### Validate the Chain
 
-```bash
-./toychain -data demo.json -difficulty 3 validate
-```
-
-Windows PowerShell:
-
 ```powershell
 .\toychain.exe -data demo.json -difficulty 3 validate
 ```
 
-Validation checks:
-
-- block height sequence
-- stored hash equals recomputed hash
-- proof-of-work target
-- genesis block canonical fields
-- previous-hash links
-- timestamp ordering
-- transaction syntax
-- transaction ID correctness
-- sufficient sender balances
+Validation checks block structure, canonical genesis, stored hashes, recomputed hashes, proof-of-work, previous-hash links, timestamps, transaction IDs, signatures, nonces, duplicate transaction IDs, sender balances, and overflow rules.
 
 ### Print the Chain
-
-```bash
-./toychain -data demo.json -difficulty 3 print
-```
-
-Windows PowerShell:
 
 ```powershell
 .\toychain.exe -data demo.json -difficulty 3 print
 ```
 
 ### Tamper with a Transaction
-
-```bash
-./toychain -data demo.json tamper -height 1 -tx 0 -amount 999
-```
-
-Windows PowerShell:
 
 ```powershell
 .\toychain.exe -data demo.json tamper -height 1 -tx 0 -amount 999
@@ -285,28 +224,35 @@ This deliberately changes a transaction amount without re-mining. Running valida
 Windows PowerShell example:
 
 ```powershell
-Remove-Item e2e_chain.json -ErrorAction SilentlyContinue
+Remove-Item demo.json -ErrorAction SilentlyContinue
+Remove-Item alice.wallet.json -ErrorAction SilentlyContinue
+Remove-Item bob.wallet.json -ErrorAction SilentlyContinue
 
-.\toychain.exe -data e2e_chain.json -difficulty 3 init -force
-.\toychain.exe -data e2e_chain.json -difficulty 3 faucet -to alice -amount 100
-.\toychain.exe -data e2e_chain.json -difficulty 3 pending
-.\toychain.exe -data e2e_chain.json -difficulty 3 mine
-.\toychain.exe -data e2e_chain.json -difficulty 3 balances
+.\toychain.exe wallet new -out alice.wallet.json -passphrase alice-pass
+.\toychain.exe wallet new -out bob.wallet.json -passphrase bob-pass
 
-.\toychain.exe -data e2e_chain.json -difficulty 3 tx -from alice -to bob -amount 40
-.\toychain.exe -data e2e_chain.json -difficulty 3 pending
-.\toychain.exe -data e2e_chain.json -difficulty 3 mine
-.\toychain.exe -data e2e_chain.json -difficulty 3 balances
-.\toychain.exe -data e2e_chain.json -difficulty 3 validate
-.\toychain.exe -data e2e_chain.json -difficulty 3 print
+.\toychain.exe wallet show -path alice.wallet.json
+.\toychain.exe wallet show -path bob.wallet.json
+```
+
+Copy the two addresses, then run:
+
+```powershell
+.\toychain.exe -data demo.json -difficulty 3 init -force
+.\toychain.exe -data demo.json -difficulty 3 faucet -to ALICE_ADDRESS -amount 100
+.\toychain.exe -data demo.json -difficulty 3 mine
+.\toychain.exe -data demo.json -difficulty 3 tx -wallet alice.wallet.json -passphrase alice-pass -to BOB_ADDRESS -amount 40
+.\toychain.exe -data demo.json -difficulty 3 mine
+.\toychain.exe -data demo.json -difficulty 3 balances
+.\toychain.exe -data demo.json -difficulty 3 validate
+.\toychain.exe -data demo.json -difficulty 3 print
 ```
 
 Expected final balances:
 
 ```text
-ACCOUNT  BALANCE
-alice    60
-bob      40
+ALICE_ADDRESS    60
+BOB_ADDRESS      40
 ```
 
 Expected validation result:
@@ -320,68 +266,32 @@ VALID: 3 blocks checked
 Zero amount is rejected:
 
 ```powershell
-.\toychain.exe -data e2e_chain.json -difficulty 3 tx -from alice -to bob -amount 0
+.\toychain.exe -data demo.json -difficulty 3 tx -wallet alice.wallet.json -passphrase alice-pass -to BOB_ADDRESS -amount 0
 ```
 
 Negative amount is rejected:
 
 ```powershell
-.\toychain.exe -data e2e_chain.json -difficulty 3 tx -from alice -to bob -amount -10
+.\toychain.exe -data demo.json -difficulty 3 tx -wallet alice.wallet.json -passphrase alice-pass -to BOB_ADDRESS -amount -10
 ```
 
 Overspending is rejected:
 
 ```powershell
-.\toychain.exe -data e2e_chain.json -difficulty 3 tx -from alice -to bob -amount 150
+.\toychain.exe -data demo.json -difficulty 3 tx -wallet alice.wallet.json -passphrase alice-pass -to BOB_ADDRESS -amount 150
 ```
 
-Balance overflow is rejected when a credit would exceed the `int64` limit.
-
-## Tamper Detection Example
-
-Create a copy of a valid chain:
+Wrong wallet passphrase is rejected:
 
 ```powershell
-Copy-Item e2e_chain.json tamper_e2e.json -Force
-```
-
-Validate before tampering:
-
-```powershell
-.\toychain.exe -data tamper_e2e.json -difficulty 3 validate
-```
-
-Tamper with block 1:
-
-```powershell
-.\toychain.exe -data tamper_e2e.json tamper -height 1 -tx 0 -amount 999
-```
-
-Validate again:
-
-```powershell
-.\toychain.exe -data tamper_e2e.json -difficulty 3 validate
-```
-
-Expected result:
-
-```text
-INVALID: block 1 failed hash check: stored hash does not match recomputed hash
+.\toychain.exe -data demo.json -difficulty 3 tx -wallet alice.wallet.json -passphrase wrong-pass -to BOB_ADDRESS -amount 10
 ```
 
 ## JSON Persistence
 
-The blockchain state is saved to the JSON file passed through the `-data` flag.
+The blockchain state is saved to the JSON file passed through the `-data` flag. The encrypted wallets are saved separately as wallet JSON files.
 
-Example:
-
-```powershell
-.\toychain.exe -data demo.json -difficulty 3 init -force
-.\toychain.exe -data demo.json -difficulty 3 faucet -to alice -amount 100
-.\toychain.exe -data demo.json -difficulty 3 mine
-```
-
-The file `demo.json` will contain the chain and pending transaction pool:
+A clean genesis-only chain contains:
 
 ```json
 {
@@ -416,68 +326,35 @@ The hash input includes:
 6. transaction count
 7. each transaction in order
 
-For each transaction, the hash input includes:
+For each transaction, the hash input includes transaction ID, sender, recipient, amount, creation timestamp, memo, transaction nonce, public key, and signature.
 
-1. transaction index
-2. transaction ID
-3. sender
-4. recipient
-5. amount
-6. creation timestamp
-7. memo
+### Wallets and Signatures
 
-String values are length-prefixed before writing to the hash payload. This prevents ambiguous concatenation.
+Each wallet uses an Ed25519 public/private key pair. The account address is derived from the public key. A transfer transaction contains the sender address, recipient address, amount, nonce, public key, and signature.
 
-### Previous-Hash Linking
+During validation:
 
-Each non-genesis block stores the previous block’s hash in its `PrevHash` field. During validation, the program checks that:
+1. the public key is decoded,
+2. the sender address is recalculated from the public key,
+3. the signature is verified against the transaction signing payload,
+4. the nonce is checked against the expected sender nonce,
+5. the ledger rules are applied.
 
-```text
-currentBlock.PrevHash == previousBlock.Hash
-```
+This prevents a user from creating a transaction from someone else’s address without the correct private key.
 
-This creates the tamper-evident chain structure.
+### Encrypted Wallet Storage
+
+Wallet files store public information such as address and public key in plaintext, but the private key is encrypted. The project uses AES-256-GCM from the Go standard library and a standard-library-only iterative SHA-256 key derivation function.
+
+For production wallet software, a memory-hard KDF such as Argon2id or scrypt would be stronger. This project keeps the implementation standard-library-only for learning and assessment compatibility.
 
 ### Ledger Model
 
-Balances are not stored as the source of truth. They are calculated by replaying confirmed transactions from the chain.
-
-The special `FAUCET` account introduces initial funds. Normal transfer transactions must have:
-
-- non-empty sender
-- non-empty recipient
-- positive amount
-- correct transaction ID
-- sufficient sender balance
-
-### Mining
-
-Mining searches for a nonce that makes the block hash start with the required number of leading zero hexadecimal digits.
-
-For example, with difficulty `3`, a valid block hash must begin with:
-
-```text
-000
-```
-
-Mining uses goroutines to split the nonce space across workers. When one worker finds a valid nonce, the context is cancelled and the remaining workers stop.
+Balances are not stored as the source of truth. They are calculated by replaying confirmed transactions from the chain. Pending transactions are also replayed when checking whether a new pending transaction is valid.
 
 ### Validation
 
-Validation fails fast and reports the first offending block.
-
-It checks:
-
-- chain is not empty
-- height sequence is correct
-- block hash matches recomputed hash
-- block hash satisfies proof-of-work difficulty
-- genesis block has the fixed previous hash
-- previous-hash links are correct
-- timestamps do not move backwards
-- transaction structure is valid
-- transaction IDs match their contents
-- sender balances are sufficient
+Validation fails fast and reports the first offending block. It checks canonical genesis, height sequence, stored hash, recomputed hash, proof-of-work, previous-hash links, timestamps, transaction syntax, transaction IDs, signatures, nonces, duplicate IDs, sufficient balances, and overflow rules.
 
 ## Known Constraints and Future Improvements
 
@@ -487,18 +364,18 @@ Current constraints:
 
 - no peer-to-peer network
 - no distributed consensus
-- no transaction signatures
-- no wallet/key management
 - no Merkle tree
 - no fork choice rule
 - no real finality
 - no transaction fees
 - no smart contracts
+- wallet passphrases are supplied through CLI flags, which can be exposed in shell history
+- the standard-library-only KDF is educational and weaker than Argon2id/scrypt
 
 Useful future improvements:
 
-1. Add digital signatures so only the owner of an account can spend funds.
-2. Add public/private key wallet generation.
+1. Use interactive hidden passphrase input.
+2. Replace the educational KDF with Argon2id or scrypt.
 3. Add Merkle roots and Merkle proof verification.
 4. Add a REST API for block and transaction lookup.
 5. Add peer-to-peer node communication.
@@ -513,15 +390,12 @@ The research report is available at:
 reports/research_report.md
 ```
 
-It covers:
+## Quick Final Check
 
-- problem analysis
-- architecture
-- hashing scheme
-- validation strategy
-- Go feature choices
-- tamper-evidence experiment
-- difficulty-versus-effort experiment
-- blockchain design discussion
-- constraints and future improvements
+Before submission, run:
 
+```powershell
+go test ./...
+go vet ./...
+go build -o toychain.exe ./cmd/toychain
+```

@@ -8,6 +8,10 @@ import (
 var (
 	ErrInvalidAmount       = errors.New("invalid transaction amount")
 	ErrInvalidTransaction  = errors.New("invalid transaction")
+	ErrInvalidSignature    = errors.New("invalid transaction signature")
+	ErrInvalidWallet       = errors.New("invalid wallet")
+	ErrInvalidNonce        = errors.New("invalid transaction nonce")
+	ErrDuplicateTx         = errors.New("duplicate transaction")
 	ErrInsufficientFunds   = errors.New("insufficient funds")
 	ErrBalanceOverflow     = errors.New("balance overflow")
 	ErrInvalidDifficulty   = errors.New("invalid difficulty")

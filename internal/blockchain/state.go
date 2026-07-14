@@ -17,18 +17,32 @@ func NewState() State {
 	return State{Chain: []Block{NewGenesisBlock()}, Pending: []Transaction{}}
 }
 
-// AddPending validates a transaction against confirmed and already-pending ledger state.
-func (s *State) AddPending(tx Transaction) error {
-	balances, err := BalancesFromChain(s.Chain)
+// NextNonce returns the next valid nonce for an account after confirmed and pending transactions.
+func (s State) NextNonce(account string) (uint64, error) {
+	ledger, err := LedgerFromChain(s.Chain)
 	if err != nil {
-		return fmt.Errorf("derive balances: %w", err)
+		return 0, fmt.Errorf("derive ledger: %w", err)
 	}
 	for _, pendingTx := range s.Pending {
-		if err := ApplyTransaction(balances, pendingTx); err != nil {
+		if err := ledger.ApplyTransaction(pendingTx); err != nil {
+			return 0, fmt.Errorf("existing pending transaction is invalid: %w", err)
+		}
+	}
+	return ledger.Nonces[account] + 1, nil
+}
+
+// AddPending validates a transaction against confirmed and already-pending ledger state.
+func (s *State) AddPending(tx Transaction) error {
+	ledger, err := LedgerFromChain(s.Chain)
+	if err != nil {
+		return fmt.Errorf("derive ledger: %w", err)
+	}
+	for _, pendingTx := range s.Pending {
+		if err := ledger.ApplyTransaction(pendingTx); err != nil {
 			return fmt.Errorf("existing pending transaction is invalid: %w", err)
 		}
 	}
-	if err := ApplyTransaction(balances, tx); err != nil {
+	if err := ledger.ApplyTransaction(tx); err != nil {
 		return fmt.Errorf("reject transaction: %w", err)
 	}
 	s.Pending = append(s.Pending, tx)
@@ -51,12 +65,12 @@ func (s *State) MinePending(ctx context.Context, cfg Config, now time.Time) (Blo
 	batch := make([]Transaction, limit)
 	copy(batch, s.Pending[:limit])
 
-	balances, err := BalancesFromChain(s.Chain)
+	ledger, err := LedgerFromChain(s.Chain)
 	if err != nil {
-		return Block{}, MiningStats{}, fmt.Errorf("derive balances: %w", err)
+		return Block{}, MiningStats{}, fmt.Errorf("derive ledger: %w", err)
 	}
 	for _, tx := range batch {
-		if err := ApplyTransaction(balances, tx); err != nil {
+		if err := ledger.ApplyTransaction(tx); err != nil {
 			return Block{}, MiningStats{}, fmt.Errorf("pending batch is invalid: %w", err)
 		}
 	}
@@ -79,14 +93,14 @@ func (s State) Balances() (Balances, error) {
 
 // BalancesIncludingPending returns balances after confirmed and pending transactions.
 func (s State) BalancesIncludingPending() (Balances, error) {
-	balances, err := BalancesFromChain(s.Chain)
+	ledger, err := LedgerFromChain(s.Chain)
 	if err != nil {
 		return nil, err
 	}
 	for _, tx := range s.Pending {
-		if err := ApplyTransaction(balances, tx); err != nil {
+		if err := ledger.ApplyTransaction(tx); err != nil {
 			return nil, fmt.Errorf("apply pending: %w", err)
 		}
 	}
-	return balances, nil
+	return ledger.Balances, nil
 }

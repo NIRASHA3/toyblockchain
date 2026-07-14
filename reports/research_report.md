@@ -2,33 +2,28 @@
 
 ## 1. Project scope and problem analysis
 
-This project implements a local command-line blockchain and ledger simulator in Go. The system is intentionally small and self-contained: it does not connect to peers, use external blockchain services, or depend on third-party chain libraries. The main engineering problem is to represent an append-only chain where each block is linked to its predecessor, mined through a configurable proof-of-work rule, and validated deterministically after it is stored.
+This project implements a local command-line blockchain and ledger simulator in pure Go. The goal is to demonstrate the internal behaviour of a small blockchain, including deterministic block hashing, proof-of-work mining, ledger replay, tamper detection, JSON persistence, and transaction validation.
 
-Correctness depends on two related properties. First, every block hash must be derived from the block's exact contents and its previous-hash link. Second, account balances must be reproducible from confirmed transaction history rather than treated as independent mutable state. If a transaction in an earlier block is changed, the recomputed hash must differ from the stored hash, and validation must report the first block where the inconsistency appears.
-
-The ledger model supports simple transfers between named accounts. A reserved `FAUCET` sender introduces funds for testing and demonstration, avoiding the need for mining rewards, wallets, or digital signatures. This keeps the implementation focused on hashing, mining, validation, persistence, and Go code quality.
+The latest improvement adds wallet-based signed transactions. Earlier versions used simple account names, which proved ledger behaviour but did not prove transaction ownership. The updated version derives account addresses from Ed25519 public keys and requires normal transfers to be signed by the sender wallet.
 
 ## 2. Architecture
 
-The code is organised as a small Go module with a clear separation between command-line concerns and domain logic:
+The project is organised as a small Go module:
 
-- `cmd/toychain`: command-line parsing, user-facing output, and orchestration.
-- `internal/blockchain`: blocks, transactions, mining, validation, ledger replay, pending transactions, and persistence.
+- `cmd/toychain`: command-line interface and output formatting.
+- `internal/blockchain`: domain logic for blocks, transactions, wallets, mining, validation, balances, and persistence.
 
-The main domain types are:
+The main types are:
 
-- `Transaction`: sender, recipient, integer amount, creation time, memo, and deterministic transaction ID.
+- `Wallet`: Ed25519 key pair and derived address.
+- `Transaction`: sender, recipient, amount, creation time, memo, nonce, public key, signature, and deterministic ID.
 - `Block`: height, Unix timestamp, difficulty, transaction list, previous block hash, nonce, and own hash.
 - `State`: confirmed chain plus pending transaction pool.
-- `Balances`: derived account-balance map used when admitting transactions and validating the chain.
-
-The CLI works with a JSON state file, so the chain survives between runs. Global flags allow the data path, difficulty, block size, worker count, and mining timeout to be configured without changing code.
+- `LedgerState`: replayed balances, sender nonces, and seen transaction IDs.
 
 ## 3. Hashing scheme
 
-A block hash is computed with SHA-256 over a canonical byte payload. The block's own `Hash` field is excluded, because including it would make the hash self-referential and impossible to reproduce directly.
-
-The block fields are written into the hash payload in this exact order:
+A block hash is computed using SHA-256 over a canonical byte payload. The block's own `Hash` field is excluded. The field order is:
 
 1. block height,
 2. Unix timestamp,
@@ -36,66 +31,83 @@ The block fields are written into the hash payload in this exact order:
 4. previous block hash,
 5. nonce,
 6. transaction count,
-7. for each transaction in order: transaction index, transaction ID, sender, recipient, amount, creation timestamp, and memo.
+7. for each transaction in order: transaction index, transaction ID, sender, recipient, amount, creation timestamp, memo, transaction nonce, public key, and signature.
 
-String values are length-prefixed before their contents are written. This prevents ambiguous serialisation cases, such as `ab` + `c` being indistinguishable from `a` + `bc` in a plain concatenated text stream.
+String values are length-prefixed before their content is written. This avoids ambiguity such as `ab` + `c` producing the same textual stream as `a` + `bc`.
 
-This scheme gives deterministic hashing: the same block fields and nonce always produce the same SHA-256 hash, and a change to any hashed field produces a different recomputed hash with overwhelming probability.
+The transaction ID is also deterministic. It is computed from the transaction signing payload plus the signature. The signing payload excludes the transaction ID and signature, preventing circular hashing.
 
-The block difficulty is also part of the canonical hash payload. This prevents someone from lowering the difficulty value in stored JSON without changing the block hash.
+## 4. Wallets and digital signatures
 
-## 4. Validation strategy
+Wallets use Ed25519 keys from the Go standard library. The wallet address is derived by hashing the public key and taking a short address prefix. A transfer transaction includes the sender address, recipient address, amount, nonce, sender public key, and signature.
 
-Validation scans the chain from the genesis block to the latest block and stops at the first detected error. For each block, it checks:
+During validation, the system checks that:
 
-- the block height matches its position in the chain,
-- the stored hash matches a recomputation of the block hash,
-- the hash satisfies the configured proof-of-work target,
-- validation treats the genesis block as canonical by comparing it against fixed height, timestamp, difficulty, previous hash, nonce, hash, and empty transaction list,
-- every non-genesis block points to the previous block's stored hash,
+- the sender address matches the public key,
+- the signature verifies against the transaction signing payload,
+- the transaction ID matches the transaction contents,
+- the sender nonce is the next expected nonce,
+- the transaction ID has not already appeared in the chain,
+- the sender has enough balance.
+
+This improves security because a user can no longer spend from an address just by typing the address string. The transaction must be authorised by the matching private key.
+
+## 5. Encrypted wallet storage
+
+Wallet private keys are encrypted before being written to disk. The implementation uses AES-256-GCM from the Go standard library. AES-GCM provides authenticated encryption, so an incorrect passphrase or modified ciphertext is rejected during wallet loading.
+
+Because the project keeps to the standard library, the passphrase-derived encryption key is created using an iterative SHA-256 process with a random salt. This is acceptable for an educational pure-Go exercise, but a production wallet should use a memory-hard KDF such as Argon2id or scrypt.
+
+## 6. Validation strategy
+
+Validation scans the chain from block 0 to the tip and fails fast on the first offending block. It checks:
+
+- height equals the block's position in the slice,
+- recomputed hash equals stored hash,
+- hash satisfies the block's stored proof-of-work difficulty,
+- genesis block matches the fixed canonical genesis block,
+- every later block points to the previous block's stored hash,
 - timestamps do not move backwards,
 - every transaction is syntactically valid,
 - every transaction ID matches its fields,
-- every non-faucet transaction has sufficient sender balance when replayed in order.
+- every non-faucet transaction has a valid signature,
+- every sender nonce is in the correct sequence,
+- duplicate transaction IDs are rejected,
+- every non-faucet transaction has sufficient sender balance,
+- balance overflow is prevented before mutating balances.
 
-The validation function returns a custom validation error containing the offending block height and the failed check. This makes failures easier to diagnose than a generic true/false result.
+Because validation replays the ledger while checking the chain, it detects both structural tampering and business-rule violations.
 
-Ledger validation is performed by replaying transactions in chain order. Faucet transactions add funds to recipients. Normal transactions subtract from the sender and add to the recipient only after the sender's confirmed balance is checked. As a result, validation checks both chain integrity and ledger correctness.
-
-## 5. Go feature choices
-
-### Standard library focus
-
-The implementation uses the Go standard library only. Packages such as `crypto/sha256`, `encoding/json`, `flag`, `context`, `sync`, `time`, and `os` cover the required hashing, persistence, CLI parsing, cancellation, concurrency, timing, and file handling needs. No third-party dependency is necessary for this scope.
+## 7. Go feature choices
 
 ### Interfaces
 
-The core package uses concrete types rather than broad interfaces. This keeps the design simple and readable for a small command-line application. The CLI is still testable because its runner accepts `io.Writer` values for output, allowing tests to capture command results without mocking the entire application.
+The core domain package avoids unnecessary interfaces. Concrete types are clearer for this small program. The CLI accepts `io.Writer` values in `run`, making CLI tests possible without a fake framework.
 
 ### Goroutines and channels
 
-Mining is the only part of the program that benefits naturally from concurrency. The nonce space is divided across worker goroutines. Each worker searches a separate sequence of nonce values, and the first successful worker sends the mined block through a result channel. This reduces mining wall-clock time while keeping ledger and persistence operations single-path and race-free.
+Mining is the naturally concurrent part of the program. The nonce space is split among workers. A buffered result channel returns the first valid block, and context cancellation stops the remaining workers.
 
-### Context cancellation
+### Context
 
-Mining accepts a `context.Context` so the command can stop cleanly when a timeout is reached or when one worker finds a valid nonce. Once a result is found, the context is cancelled and the remaining workers exit instead of continuing unnecessary hashing work.
+`context.Context` is used in mining to support cancellation and CLI timeouts. When one worker finds a valid nonce, the context is cancelled and the remaining workers stop cleanly.
 
 ### Error handling
 
-The domain package returns errors instead of printing directly. Lower-level errors are wrapped with `%w`, allowing callers to preserve root causes while adding useful context. Validation failures use a custom `ValidationError` so the caller can report the block height and failed validation rule precisely.
+Errors are returned rather than printed in the domain package. Lower-level errors are wrapped with `%w`, and chain validation returns a custom `ValidationError` containing the block height and failed check.
 
-## 6. Experiment 1: tamper-evidence
+## 8. Experiment 1: tamper-evidence
 
 ### Setup
 
 Commands used:
 
 ```bash
-./toychain -data tamper.json -difficulty 3 -workers 1 init -force
-./toychain -data tamper.json -difficulty 3 -workers 1 faucet -to alice -amount 100
-./toychain -data tamper.json -difficulty 3 -workers 1 mine
+./toychain -data tamper.json -difficulty 3 init -force
+./toychain -data tamper.json -difficulty 3 faucet -to ALICE_ADDRESS -amount 100
+./toychain -data tamper.json -difficulty 3 mine
 ./toychain -data tamper.json -difficulty 3 validate
-./toychain -data tamper.json -difficulty 3 tamper -height 1 -tx 0 -amount 999
+./toychain -data tamper.json tamper -height 1 -tx 0 -amount 999
 ./toychain -data tamper.json -difficulty 3 validate
 ```
 
@@ -104,7 +116,7 @@ Commands used:
 Before tampering:
 
 ```text
-mined block height=1 difficulty=3 hash=0003405eafa524d3c23c8107b4ae15e91b256783e6ed0f62fa4678b09632b0d4 nonce=326 attempts=327 duration=2ms workers=1
+mined block height=1 difficulty=3 hash=000... nonce=... attempts=... duration=... workers=...
 VALID: 2 blocks checked
 ```
 
@@ -117,55 +129,73 @@ INVALID: block 1 failed hash check: stored hash does not match recomputed hash
 
 ### Explanation
 
-The transaction amount is part of the block's canonical hash payload. Changing the amount from `100` to `999` changes the recomputed hash. The stored block hash remains the original mined hash, so validation fails at block 1 during the hash check. In this case, validation does not need to reach the previous-hash-link check because the first modified block is already invalid.
+The transaction amount is part of the block's canonical hash payload. Changing the amount changes the recomputed hash. The stored block hash remains the old mined hash, so validation fails at the first altered block during the hash check.
 
-## 7. Experiment 2: difficulty versus effort
+## 9. Experiment 2: difficulty versus effort
 
-The proof-of-work target is a required number of leading zero hexadecimal digits. One hexadecimal digit has 16 possible values, so each additional required zero multiplies the expected search space by approximately 16. Individual runs can vary because mining is probabilistic.
+The proof-of-work target is a required number of leading zero hexadecimal digits. One hexadecimal digit has 16 possible values, so adding one required leading zero multiplies the expected search space by about 16. Individual runs can vary because hashing is probabilistic.
 
-Single-worker mining results from the implementation:
+Example single-worker mining trend:
 
-| Difficulty | Nonce found | Hash attempts | Duration |
-|---:|---:|---:|---:|
-| 1 | 11 | 12 | 0 ms |
-| 2 | 107 | 108 | 1 ms |
-| 3 | 6,828 | 6,829 | 28 ms |
-| 4 | 10,251 | 10,252 | 41 ms |
-| 5 | 558,651 | 558,652 | 1.857 s |
+| Difficulty | Expected trend |
+|---:|---|
+| 1 | Usually very fast |
+| 2 | More attempts than difficulty 1 |
+| 3 | Noticeably more attempts |
+| 4 | Can vary but average effort is much higher |
+| 5 | Highest supported difficulty for this simulator |
 
-The trend is not linear in the difficulty number. Expected work grows exponentially because each extra leading zero adds another 1-in-16 condition. The difficulty-4 result finished earlier than the rough expectation because a valid nonce was found relatively quickly in that individual run. Over many runs, the average number of attempts would move closer to the exponential expectation.
+The trend is not linear in the difficulty number. The expected work grows exponentially because each extra zero hex digit adds another 1-in-16 condition.
 
-## 8. Discussion
+## 10. Discussion
 
-### Previous-hash links and tamper resistance
+### Why previous-hash links make old tampering impractical in real chains
 
-In this local implementation, a user with write access to the JSON file can alter history and, with enough computation, re-mine the modified block and every following block. In a real proof-of-work network, rewriting old history is far more difficult because the attacker must redo the work for the changed block and then catch up with the continuing work of the honest network. The previous-hash link ensures that a change to one old block invalidates that block and every descendant unless all affected proof-of-work is redone.
+In this local toy, a user can edit the JSON file and, with enough time, re-mine the changed block and every following block. In a real chain, old tampering is impractical because the attacker must redo the proof-of-work for the modified block and then catch up with and overtake the honest network's continuing work.
 
 ### Alternative to proof-of-work
 
-One alternative is proof-of-stake. Instead of using brute-force hashing, validators lock economic value and can be penalised for dishonest behaviour. A major advantage is lower energy consumption because validators do not compete by continuously hashing. A drawback is increased protocol complexity: validator selection, penalties, finality, and governance must be designed carefully.
+One alternative is proof-of-stake. Instead of expending hashing work, validators lock economic value and can be penalised if they behave dishonestly. One advantage is lower energy use because validators do not compete by brute-force hashing. One drawback is extra protocol complexity because validator selection, slashing, and finality rules must be designed carefully.
 
-Another alternative for private or consortium systems is proof-of-authority. In proof-of-authority, known authorised validators are allowed to create blocks. Its advantage is speed and operational simplicity in trusted environments. Its drawback is centralisation, because users must trust the selected authority set.
+Another simple private-network alternative is proof-of-authority, where known authorised validators may create blocks. Its advantage is simplicity and speed for trusted organisations. Its drawback is centralisation.
 
-### Differences from production blockchains
+### Three ways this toy differs from production blockchains
 
-This implementation differs from a production blockchain in several important ways:
+1. **No distributed consensus.** This program has one local chain file. Production blockchains must handle many nodes, forks, propagation delays, and adversarial participants.
+2. **No Merkle tree.** The block hashes the full transaction list directly. Production chains usually store a Merkle root so transaction inclusion can be verified efficiently.
+3. **No peer-to-peer network.** Transactions and blocks are not propagated between nodes.
 
-1. **No distributed consensus.** The program stores one local chain file. Production networks must handle many nodes, forks, propagation delay, and adversarial behaviour.
-2. **No transaction signatures.** Transactions identify senders by plain text account names. Production blockchains require cryptographic signatures so only the owner of funds can authorise spending.
-3. **No Merkle tree.** The block hash directly includes the transaction list. Production systems often use a Merkle root so transaction inclusion can be proven efficiently without downloading every transaction.
-4. **No finality model.** A local file has no network-level rule for when a block should be considered irreversible.
+If extending one area next, a Merkle tree would be useful. Each transaction would be hashed into a leaf, pairs of hashes would be combined, and the final Merkle root would be included in the block hash. This would allow transaction inclusion proofs.
 
-If this project were extended, the first improvement would be transaction signatures. Each account could be represented by a public key. A transaction would include a signature over its canonical transaction payload, and validation would verify that signature before applying the transfer. This would prevent a user from creating a transaction that spends from another account name without authorisation.
+## 11. Constraints and future improvements
 
-## 9. Constraints and future improvements
+This implementation is suitable for a local CLI blockchain learning project. It is not production money software.
 
-The implementation satisfies the intended local simulator scope: command-line operation, deterministic hashing, proof-of-work mining, ledger replay, validation, tamper detection, JSON persistence, and automated tests. It is not designed to be secure financial software or a distributed blockchain network.
+Current constraints:
 
-The main constraints are intentional: there is no peer-to-peer networking, no digital identity system, no Sybil resistance, no mempool policy, no fork-choice rule, and no production finality mechanism. Difficulty is capped at a practical level so the program remains easy to run on a laptop. These constraints keep the project focused on the required engineering goals while leaving clear paths for future work.
+- no peer-to-peer network,
+- no distributed consensus,
+- no Merkle tree,
+- no fork choice rule,
+- no transaction fees,
+- no smart contracts,
+- passphrases are supplied through CLI flags,
+- the standard-library-only wallet KDF is educational and weaker than Argon2id or scrypt.
+
+Future improvements:
+
+1. Use interactive hidden passphrase input.
+2. Replace the educational KDF with Argon2id or scrypt.
+3. Add Merkle roots and Merkle proof verification.
+4. Add a REST API for block and transaction lookup.
+5. Add peer-to-peer node communication.
+6. Add proof-of-authority or fork-resolution logic.
+7. Add difficulty retargeting.
 
 ## References
 
+- Go documentation: `crypto/ed25519` package.
+- Go documentation: `crypto/aes` and `crypto/cipher` packages.
 - Go documentation: `crypto/sha256` package.
 - Go documentation: `context` package.
 - Satoshi Nakamoto, "Bitcoin: A Peer-to-Peer Electronic Cash System".
