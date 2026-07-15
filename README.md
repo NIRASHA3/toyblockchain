@@ -64,11 +64,15 @@ toyblockchain/
       chain_integrity_test.go
       config.go
       errors.go
+      fork.go
+      fork_test.go
       invalid_transaction_test.go
       ledger.go
       merkle.go
       merkle_test.go
       mining.go
+      retarget.go
+      retarget_test.go
       state.go
       storage.go
       transaction.go
@@ -118,7 +122,7 @@ go vet ./...
 go build -o toychain.exe ./cmd/toychain
 ```
 
-The automated tests cover deterministic hashing, canonical genesis validation, Merkle root calculation, Merkle-root tamper detection, Merkle proof generation/verification, proof-of-work target checks, signed transaction validation, wallet encryption/decryption, wrong-passphrase rejection, nonce validation, duplicate transaction rejection, invalid amount rejection, overspending rejection, pending-pool overspending rejection, previous-hash-link validation, JSON persistence, CLI error handling, REST API read and write endpoints, longest-valid-chain fork resolution, pending-pool filtering after fork adoption, and tamper detection.
+The automated tests cover deterministic hashing, canonical genesis validation, Merkle root calculation, Merkle-root tamper detection, Merkle proof generation/verification, proof-of-work target checks, signed transaction validation, wallet encryption/decryption, wrong-passphrase rejection, nonce validation, duplicate transaction rejection, invalid amount rejection, overspending rejection, pending-pool overspending rejection, previous-hash-link validation, JSON persistence, CLI error handling, REST API read and write endpoints, difficulty retargeting, longest-valid-chain fork resolution, pending-pool filtering after fork adoption, and tamper detection.
 
 ## Command-Line Usage
 
@@ -313,7 +317,7 @@ VALID: 3 blocks checked
 
 ## REST API
 
-The project includes a local HTTP API using Go's standard `net/http` package. The API works like a small blockchain explorer and local node API. It can read chain data, validate the chain, accept faucet transactions, accept already-signed transfer transactions, and mine pending transactions.
+The project includes a local HTTP API using Go's standard `net/http` package. The API works like a small blockchain explorer and local node API. It can read chain data, validate the chain, accept faucet transactions, accept already-signed transfer transactions, mine pending transactions, and resolve local forks using a longest-valid-chain rule.
 
 Important security design: the API does **not** receive wallet passphrases, private keys, or wallet file paths. Wallets are unlocked only by the CLI/client. The API receives already-signed transactions and verifies them before adding them to the pending pool.
 
@@ -578,10 +582,10 @@ Useful future improvements:
 1. Use interactive hidden passphrase input.
 2. Replace the educational KDF with Argon2id or scrypt.
 3. Add HTTPS support, stronger authentication, rate limiting, and role-based API access.
-4. Add peer-to-peer node communication.
+4. Add peer-to-peer node communication with peer discovery and network-based chain exchange.
 5. Add cumulative-work fork choice instead of simple block-count comparison.
 6. Add proof-of-authority mode for enterprise/private-chain validation.
-7. Add peer discovery and network-based chain exchange.
+7. Add transaction fees or mining rewards for a more realistic incentive model.
 
 ## Research Report
 

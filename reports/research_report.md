@@ -4,7 +4,7 @@
 
 This project implements a local command-line blockchain and ledger simulator in pure Go. The goal is to demonstrate the internal behaviour of a small blockchain, including deterministic block hashing, proof-of-work mining, ledger replay, tamper detection, JSON persistence, transaction validation, wallet-based signatures, Merkle-root-based transaction commitment, difficulty retargeting, local longest-valid-chain fork resolution, and REST API access with signed transaction submission.
 
-The latest improvement adds fork resolution. The node can compare its local state file with a competing state, validate both chains, and adopt the candidate only when it is valid and strictly longer. The API can also accept a competing state through a protected write endpoint.
+The latest improvement adds fork resolution. The node can compare its local state file with a competing state, validate both chains, and adopt the candidate only when it is valid and strictly longer. The API can also accept a competing state through a protected write endpoint. Therefore, the optional extension list is now covered: digital signatures, Merkle roots, concurrent mining, difficulty retargeting, and fork resolution.
 
 ## 2. Architecture
 
@@ -123,7 +123,7 @@ The API intentionally does not receive wallet file paths, private keys, or walle
 
 For fork resolution, `POST /resolve-fork` accepts a complete competing state JSON body. The endpoint is a protected write endpoint when `-api-token` is configured. The candidate chain is validated before any local state is replaced.
 
-When an API token is configured, the state-changing endpoints `POST /faucet`, `POST /transactions`, and `POST /mine` require the `X-API-Token` request header. Read endpoints remain available without the token. This keeps the local chain easy to inspect while reducing the risk of accidental unauthenticated writes. The token comparison uses constant-time comparison from the Go standard library to avoid simple timing differences.
+When an API token is configured, the state-changing endpoints `POST /faucet`, `POST /transactions`, `POST /mine`, and `POST /resolve-fork` require the `X-API-Token` request header. Read endpoints remain available without the token. This keeps the local chain easy to inspect while reducing the risk of accidental unauthenticated writes. The token comparison uses constant-time comparison from the Go standard library to avoid simple timing differences.
 
 `POST /faucet` is kept as a learning endpoint because this toy chain has no mining reward or transaction fee model. `POST /mine` mines the current pending pool into a block using the configured proof-of-work difficulty.
 
@@ -389,10 +389,10 @@ Future improvements:
 1. Use interactive hidden passphrase input.
 2. Replace the educational KDF with Argon2id or scrypt.
 3. Add HTTPS support, stronger authentication, rate limiting, and role-based API access.
-4. Add peer-to-peer node communication.
+4. Add peer-to-peer node communication with peer discovery and network-based chain exchange.
 5. Add cumulative-work fork choice instead of simple block-count comparison.
 6. Add proof-of-authority mode for enterprise/private-chain validation.
-7. Add peer discovery and network-based chain exchange.
+7. Add transaction fees or mining rewards for a more realistic incentive model.
 
 ## References
 
