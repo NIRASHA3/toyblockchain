@@ -2,16 +2,16 @@
 
 ## 1. Project scope and problem analysis
 
-This project implements a local command-line blockchain and ledger simulator in pure Go. The goal is to demonstrate the internal behaviour of a small blockchain, including deterministic block hashing, proof-of-work mining, ledger replay, tamper detection, JSON persistence, transaction validation, wallet-based signatures, Merkle-root-based transaction commitment, and REST API access with signed transaction submission.
+This project implements a local command-line blockchain and ledger simulator in pure Go. The goal is to demonstrate the internal behaviour of a small blockchain, including deterministic block hashing, proof-of-work mining, ledger replay, tamper detection, JSON persistence, transaction validation, wallet-based signatures, Merkle-root-based transaction commitment, difficulty retargeting, local longest-valid-chain fork resolution, and REST API access with signed transaction submission.
 
-The latest improvement hardens the REST API by binding the server to localhost by default and adding optional token protection for state-changing write endpoints. The API can accept faucet transactions, accept already-signed transfer transactions, and mine pending transactions through local HTTP endpoints without receiving wallet passphrases, private keys, or wallet file paths.
+The latest improvement adds fork resolution. The node can compare its local state file with a competing state, validate both chains, and adopt the candidate only when it is valid and strictly longer. The API can also accept a competing state through a protected write endpoint.
 
 ## 2. Architecture
 
 The project is organised as a small Go module:
 
 - `cmd/toychain`: command-line interface, HTTP API, signed transaction export, and output formatting.
-- `internal/blockchain`: domain logic for blocks, transactions, wallets, Merkle roots, mining, validation, balances, and persistence.
+- `internal/blockchain`: domain logic for blocks, transactions, wallets, Merkle roots, mining, validation, balances, fork resolution, and persistence.
 
 The main types are:
 
@@ -21,7 +21,8 @@ The main types are:
 - `State`: confirmed chain plus pending transaction pool.
 - `LedgerState`: replayed balances, sender nonces, and seen transaction IDs.
 - `MerkleProofStep`: one sibling hash and its left/right position in a Merkle proof path.
-- `apiServer`: local HTTP server for chain exploration, signed transaction submission, faucet funding, mining endpoints, and optional token protection for writes.
+- `apiServer`: local HTTP server for chain exploration, signed transaction submission, faucet funding, mining, fork resolution endpoints, and optional token protection for writes.
+- `ForkResolutionResult`: outcome of comparing a local chain with a competing candidate chain.
 
 ## 3. Hashing scheme
 
@@ -113,11 +114,14 @@ The write endpoints are:
 
 - `POST /faucet`,
 - `POST /transactions`,
-- `POST /mine`.
+- `POST /mine`,
+- `POST /resolve-fork`.
 
 Normal endpoints load the JSON state and validate the chain before returning or changing data. This prevents the API from presenting or mutating hand-edited invalid chain data as if it were valid. The `/validate` endpoint is slightly different because it must be able to report invalid chains instead of refusing to load them silently.
 
 The API intentionally does not receive wallet file paths, private keys, or wallet passphrases. The `tx-sign` CLI command signs a transaction locally and writes a signed transaction JSON file. The API can then receive that signed transaction through `POST /transactions`. This is closer to a standard blockchain node model: the client owns the private key and signs locally, while the node verifies the signature, transaction ID, nonce, duplicate transaction ID, sender balance, and chain validity.
+
+For fork resolution, `POST /resolve-fork` accepts a complete competing state JSON body. The endpoint is a protected write endpoint when `-api-token` is configured. The candidate chain is validated before any local state is replaced.
 
 When an API token is configured, the state-changing endpoints `POST /faucet`, `POST /transactions`, and `POST /mine` require the `X-API-Token` request header. Read endpoints remain available without the token. This keeps the local chain easy to inspect while reducing the risk of accidental unauthenticated writes. The token comparison uses constant-time comparison from the Go standard library to avoid simple timing differences.
 
@@ -295,11 +299,11 @@ Another simple private-network alternative is proof-of-authority, where known au
 
 ### Three ways this toy differs from production blockchains
 
-1. **No distributed consensus.** This program has one local chain file. Production blockchains must handle many nodes, forks, propagation delays, and adversarial participants.
-2. **No peer-to-peer network.** Transactions and blocks are not propagated between nodes.
-3. **No fork choice rule.** If two different valid histories are created locally, the program does not implement a network rule to choose the canonical one.
+1. **No distributed consensus.** This program demonstrates fork choice locally, but it does not run a real distributed consensus protocol.
+2. **No peer-to-peer network.** Transactions and blocks are not automatically propagated between nodes.
+3. **Simple fork choice.** Fork resolution uses a longest-valid-chain rule based on block count, not cumulative work, network votes, finality checkpoints, or economic stake.
 
-The project now includes a Merkle root and a proof command, but it still stores the full transactions inside each local block file.
+The project now includes Merkle roots, Merkle proofs, difficulty retargeting, and local fork resolution, but it still stores the full transactions inside each local block file.
 
 ## 15. Experiment 5: REST API security controls
 
@@ -336,15 +340,45 @@ curl -X POST http://127.0.0.1:8080/mine \
 
 The security controls are intentionally simple and local. Binding to localhost by default prevents accidental exposure on the local network. Optional token protection separates read-only inspection from state-changing operations. This is not full production security, but it is a useful enterprise-style hardening step for a local educational node.
 
-## 16. Constraints and future improvements
+## 16. Experiment 6: Fork resolution
+
+### Setup
+
+The local node can compare its own state file with another state file that represents a competing chain:
+
+```bash
+./toychain -data local.json -difficulty 3 resolve-fork -candidate candidate.json -dry-run
+./toychain -data local.json -difficulty 3 resolve-fork -candidate candidate.json
+```
+
+The same behaviour is available through the REST API:
+
+```bash
+curl -X POST http://127.0.0.1:8080/resolve-fork \
+  -H 'Content-Type: application/json' \
+  -H 'X-API-Token: dev-secret' \
+  --data @candidate.json
+```
+
+### Expected result
+
+The candidate is adopted only when it is valid and has a greater confirmed block height than the local chain. If the candidate is invalid, the local state is not changed. If the candidate is equal length or shorter, the local chain is kept.
+
+When a longer valid candidate is adopted, local pending transactions are replayed on top of the adopted chain. Pending transactions that remain valid are kept, and conflicting pending transactions are dropped. Candidate pending transactions are not imported because fork choice applies to confirmed blocks rather than to another node's mempool.
+
+### Explanation
+
+This implements a longest-valid-chain rule in a local educational form. It is not a full distributed consensus protocol, but it demonstrates the key idea that a node should not blindly accept another chain. The candidate must pass complete validation first, including canonical genesis, hashes, proof-of-work, Merkle roots, signatures, nonces, balances, duplicate transaction checks, and difficulty retargeting rules.
+
+## 17. Constraints and future improvements
 
 This implementation is suitable for a local CLI blockchain learning project. It is not production money software.
 
 Current constraints:
 
 - no peer-to-peer network,
-- no distributed consensus,
-- no fork choice rule,
+- no distributed consensus beyond local longest-valid-chain comparison,
+- fork choice is based on block count rather than cumulative work,
 - no transaction fees,
 - no smart contracts,
 - passphrases are supplied through CLI flags,
@@ -356,8 +390,9 @@ Future improvements:
 2. Replace the educational KDF with Argon2id or scrypt.
 3. Add HTTPS support, stronger authentication, rate limiting, and role-based API access.
 4. Add peer-to-peer node communication.
-5. Add proof-of-authority.
-6. Add fork resolution based on a longest-valid-chain rule.
+5. Add cumulative-work fork choice instead of simple block-count comparison.
+6. Add proof-of-authority mode for enterprise/private-chain validation.
+7. Add peer discovery and network-based chain exchange.
 
 ## References
 

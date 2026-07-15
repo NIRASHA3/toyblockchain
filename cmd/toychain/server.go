@@ -94,6 +94,11 @@ type mineResponse struct {
 	PendingCount int              `json:"pending_count"`
 }
 
+type forkResolutionResponse struct {
+	Status string                          `json:"status"`
+	Result blockchain.ForkResolutionResult `json:"result"`
+}
+
 func newAPIServer(dataPath string, cfg blockchain.Config, apiToken string) http.Handler {
 	s := &apiServer{dataPath: dataPath, cfg: cfg, apiToken: apiToken}
 	mux := http.NewServeMux()
@@ -106,6 +111,7 @@ func newAPIServer(dataPath string, cfg blockchain.Config, apiToken string) http.
 	mux.HandleFunc("/transactions/", s.handleTransactionByID)
 	mux.HandleFunc("/faucet", s.handleFaucet)
 	mux.HandleFunc("/mine", s.handleMine)
+	mux.HandleFunc("/resolve-fork", s.handleResolveFork)
 	mux.HandleFunc("/merkle-proof", s.handleMerkleProof)
 	mux.HandleFunc("/validate", s.handleValidate)
 	return mux
@@ -317,6 +323,41 @@ func (s *apiServer) handleMine(w http.ResponseWriter, r *http.Request) {
 		Workers:      stats.Workers,
 		PendingCount: len(state.Pending),
 	})
+}
+
+func (s *apiServer) handleResolveFork(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	if !s.requireWriteToken(w, r) {
+		return
+	}
+	var candidate blockchain.State
+	if err := decodeJSONBody(w, r, &candidate); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	local, err := blockchain.LoadState(s.dataPath)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	resolved, result, err := blockchain.ResolveFork(local, candidate, s.cfg)
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	if result.Adopted {
+		if err := blockchain.SaveState(s.dataPath, resolved); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	status := "kept_local"
+	if result.Adopted {
+		status = "adopted_candidate"
+	}
+	writeJSON(w, http.StatusOK, forkResolutionResponse{Status: status, Result: result})
 }
 
 func (s *apiServer) handleMerkleProof(w http.ResponseWriter, r *http.Request) {

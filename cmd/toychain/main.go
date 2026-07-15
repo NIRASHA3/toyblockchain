@@ -104,6 +104,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return cmdMerkleProof(commandArgs, cfg, bcfg, stdout, stderr)
 	case "serve":
 		return cmdServe(commandArgs, cfg, bcfg, stdout, stderr)
+	case "resolve-fork":
+		return cmdResolveFork(commandArgs, cfg, bcfg, stdout, stderr)
 	case "tamper":
 		return cmdTamper(commandArgs, cfg, bcfg, stdout, stderr)
 	default:
@@ -468,6 +470,51 @@ func cmdServe(args []string, cfg cliConfig, bcfg blockchain.Config, stdout, stde
 	return nil
 }
 
+func cmdResolveFork(args []string, cfg cliConfig, bcfg blockchain.Config, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("resolve-fork", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	candidatePath := fs.String("candidate", "", "competing chain state JSON file")
+	dryRun := fs.Bool("dry-run", false, "compare chains without replacing local state")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*candidatePath) == "" {
+		return fmt.Errorf("candidate state file is required")
+	}
+
+	local, err := blockchain.LoadState(cfg.dataPath)
+	if err != nil {
+		return err
+	}
+	candidate, err := blockchain.LoadState(*candidatePath)
+	if err != nil {
+		return fmt.Errorf("load candidate state: %w", err)
+	}
+
+	resolved, result, err := blockchain.ResolveFork(local, candidate, bcfg)
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintf(stdout, "local height=%d candidate height=%d decision=%s adopted=%t\n", result.LocalHeight, result.CandidateHeight, result.Decision, result.Adopted)
+	fmt.Fprintf(stdout, "reason: %s\n", result.Reason)
+	fmt.Fprintf(stdout, "pending kept=%d dropped=%d\n", result.KeptPending, result.DroppedPending)
+
+	if *dryRun {
+		fmt.Fprintln(stdout, "dry run: local state was not changed")
+		return nil
+	}
+	if !result.Adopted {
+		fmt.Fprintln(stdout, "local state unchanged")
+		return nil
+	}
+	if err := blockchain.SaveState(cfg.dataPath, resolved); err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "adopted candidate chain and saved updated state to %s\n", cfg.dataPath)
+	return nil
+}
+
 func cmdTamper(args []string, cfg cliConfig, bcfg blockchain.Config, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("tamper", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -539,6 +586,7 @@ Commands:
   merkle-proof -height N -tx I                print a transaction Merkle proof
   serve [-addr 127.0.0.1:8080] [-api-token TOKEN]
                                              start REST API server
+  resolve-fork -candidate FILE [-dry-run]     compare with a competing state and adopt it if longer and valid
   tamper -height N -tx I -amount N            deliberately alter stored data for demo`))
 }
 

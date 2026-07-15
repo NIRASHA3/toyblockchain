@@ -1,6 +1,6 @@
 # Toy Blockchain and Ledger Simulator
 
-A pure-Go command-line toy blockchain and ledger simulator that demonstrates deterministic block hashing, Merkle-root-based block headers, faucet-funded transactions, wallet-based signed transfers, REST API read and write endpoints, proof-of-work mining, full-chain validation, tamper detection, encrypted wallet storage, JSON persistence, and automated tests.
+A pure-Go command-line toy blockchain and ledger simulator that demonstrates deterministic block hashing, Merkle-root-based block headers, faucet-funded transactions, wallet-based signed transfers, REST API read and write endpoints, proof-of-work mining, full-chain validation, longest-valid-chain fork resolution, tamper detection, encrypted wallet storage, JSON persistence, and automated tests.
 
 This project is intentionally local and educational. It does not connect to any external blockchain network, peer node, RPC endpoint, or third-party blockchain SDK.
 
@@ -11,6 +11,7 @@ This project is intentionally local and educational. It does not connect to any 
 - Previous-hash block linking
 - Per-block stored difficulty
 - Difficulty retargeting based on target block time and retarget interval
+- Fork resolution using a longest-valid-chain rule
 - Merkle root stored in every block
 - Transaction hash leaves and deterministic Merkle root calculation
 - Merkle proof generation and verification
@@ -29,9 +30,9 @@ This project is intentionally local and educational. It does not connect to any 
 - Balance overflow protection
 - JSON file persistence
 - Command-line interface
-- REST API for chain exploration, faucet funding, signed transaction submission, and mining
+- REST API for chain exploration, faucet funding, signed transaction submission, mining, and fork resolution
 - REST API binds to localhost by default and supports optional token protection for write endpoints
-- Unit tests for core blockchain, wallet, Merkle, CLI, and API behaviour
+- Unit tests for core blockchain, wallet, Merkle, fork resolution, CLI, and API behaviour
 
 ## Requirements
 
@@ -117,7 +118,7 @@ go vet ./...
 go build -o toychain.exe ./cmd/toychain
 ```
 
-The automated tests cover deterministic hashing, canonical genesis validation, Merkle root calculation, Merkle-root tamper detection, Merkle proof generation/verification, proof-of-work target checks, signed transaction validation, wallet encryption/decryption, wrong-passphrase rejection, nonce validation, duplicate transaction rejection, invalid amount rejection, overspending rejection, pending-pool overspending rejection, previous-hash-link validation, JSON persistence, CLI error handling, REST API read and write endpoints, and tamper detection.
+The automated tests cover deterministic hashing, canonical genesis validation, Merkle root calculation, Merkle-root tamper detection, Merkle proof generation/verification, proof-of-work target checks, signed transaction validation, wallet encryption/decryption, wrong-passphrase rejection, nonce validation, duplicate transaction rejection, invalid amount rejection, overspending rejection, pending-pool overspending rejection, previous-hash-link validation, JSON persistence, CLI error handling, REST API read and write endpoints, longest-valid-chain fork resolution, pending-pool filtering after fork adoption, and tamper detection.
 
 ## Command-Line Usage
 
@@ -243,6 +244,22 @@ Printed blocks include height, timestamp, stored difficulty, previous hash, Merk
 
 The command prints JSON containing the block height, transaction index, transaction ID, transaction hash, Merkle root, sibling proof path, and a `valid` boolean produced by local proof verification.
 
+### Resolve a Fork
+
+The `resolve-fork` command compares the local state file with another state file that represents a competing chain. Both chains are validated first. The candidate chain is adopted only if it is valid and strictly longer than the local chain.
+
+```powershell
+.\toychain.exe -data local.json -difficulty 3 resolve-fork -candidate candidate.json
+```
+
+Dry-run mode shows the fork-choice result without saving changes:
+
+```powershell
+.\toychain.exe -data local.json -difficulty 3 resolve-fork -candidate candidate.json -dry-run
+```
+
+When a longer valid candidate is adopted, the local pending pool is replayed on top of the adopted chain. Pending transactions that still fit the new ledger are kept, while conflicting pending transactions are dropped. Candidate pending transactions are not imported because the fork-choice rule applies to confirmed blocks, not another node's mempool.
+
 ### Tamper with a Transaction
 
 ```powershell
@@ -312,7 +329,7 @@ You can also provide the address explicitly:
 .\toychain.exe -data demo.json -difficulty 3 serve -addr 127.0.0.1:8080
 ```
 
-Optional write-endpoint protection can be enabled with `-api-token`. When a token is configured, `POST /faucet`, `POST /transactions`, and `POST /mine` require the `X-API-Token` header. Read endpoints remain open.
+Optional write-endpoint protection can be enabled with `-api-token`. When a token is configured, `POST /faucet`, `POST /transactions`, `POST /mine`, and `POST /resolve-fork` require the `X-API-Token` header. Read endpoints remain open.
 
 ```powershell
 .\toychain.exe -data demo.json -difficulty 3 serve -addr 127.0.0.1:8080 -api-token dev-secret
@@ -339,6 +356,7 @@ Write endpoints:
 | `POST` | `/faucet` | Add a faucet funding transaction to the pending pool |
 | `POST` | `/transactions` | Submit an already-signed transfer transaction to the pending pool |
 | `POST` | `/mine` | Mine pending transactions into a new block |
+| `POST` | `/resolve-fork` | Submit a competing state JSON and adopt it if it is longer and valid |
 
 PowerShell read examples:
 
@@ -521,6 +539,16 @@ Balances are not stored as the source of truth. They are calculated by replaying
 
 Validation fails fast and reports the first offending block. It checks canonical genesis, height sequence, stored Merkle root, stored hash, recomputed hash, proof-of-work, previous-hash links, timestamps, transaction syntax, transaction IDs, signatures, nonces, duplicate IDs, sufficient balances, and overflow rules.
 
+### Fork Resolution API Example
+
+`POST /resolve-fork` accepts a complete competing state JSON. The server validates the local chain and the candidate chain, then adopts the candidate only if it is valid and strictly longer.
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8080/resolve-fork -Headers $headers -Body (Get-Content candidate.json -Raw) -ContentType "application/json"
+```
+
+The response includes the local height, candidate height, decision, whether the candidate was adopted, and how many local pending transactions were kept or dropped after replaying them on the adopted chain.
+
 ### REST API Design
 
 The REST API loads the JSON state file, validates the chain for normal endpoints, and returns structured JSON responses. Invalid paths, unsupported methods, invalid block heights, invalid transaction IDs, invalid Merkle proof indexes, malformed request bodies, unsigned transactions, duplicate transactions, nonce errors, and insufficient balances return structured JSON error responses.
@@ -529,6 +557,8 @@ The write API is intentionally designed without wallet passphrases. `POST /trans
 
 For safer local testing, the server binds to `127.0.0.1:8080` by default instead of listening on all network interfaces. The optional `-api-token` flag protects state-changing endpoints with the `X-API-Token` header. This is not a replacement for full production API security, but it prevents accidental unauthenticated writes during local development.
 
+Fork resolution is intentionally simple and educational. The local node accepts a competing state file or JSON body, validates the candidate chain, and adopts it only when the candidate confirmed chain is strictly longer than the local confirmed chain. This models a longest-valid-chain rule without implementing real peer-to-peer networking.
+
 ## Known Constraints and Future Improvements
 
 This is a local educational blockchain simulator, not production money software.
@@ -536,8 +566,7 @@ This is a local educational blockchain simulator, not production money software.
 Current constraints:
 
 - no peer-to-peer network
-- no distributed consensus
-- no fork choice rule
+- no distributed consensus beyond the local longest-valid-chain demonstration
 - no real finality
 - no transaction fees
 - no smart contracts
@@ -550,9 +579,9 @@ Useful future improvements:
 2. Replace the educational KDF with Argon2id or scrypt.
 3. Add HTTPS support, stronger authentication, rate limiting, and role-based API access.
 4. Add peer-to-peer node communication.
-5. Add proof-of-authority or fork-resolution logic.
-6. Add fork resolution based on cumulative chain work.
-7. Add proof-of-authority mode for enterprise/private-chain validation.
+5. Add cumulative-work fork choice instead of simple block-count comparison.
+6. Add proof-of-authority mode for enterprise/private-chain validation.
+7. Add peer discovery and network-based chain exchange.
 
 ## Research Report
 

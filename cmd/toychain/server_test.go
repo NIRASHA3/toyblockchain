@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -333,5 +334,51 @@ func TestAPIWriteTokenProtection(t *testing.T) {
 	rec = performAPIRequest(t, handler, http.MethodGet, "/balances?pending=true")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("read endpoint with protected writes status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAPIResolveForkAdoptsLongerValidCandidate(t *testing.T) {
+	fixture := buildAPITestChain(t)
+	cfg := blockchain.Config{Difficulty: 1, MaxBlockTx: blockchain.DefaultMaxBlockTx, RetargetInterval: 0}
+	handler := newAPIServer(fixture.ChainPath, cfg, "secret-token")
+
+	candidate, err := blockchain.LoadState(fixture.ChainPath)
+	if err != nil {
+		t.Fatalf("load candidate base: %v", err)
+	}
+	tx, err := blockchain.NewFaucet(fixture.BobAddr, 7, "candidate extra block", time.Now())
+	if err != nil {
+		t.Fatalf("new faucet: %v", err)
+	}
+	if err := candidate.AddPending(tx); err != nil {
+		t.Fatalf("candidate AddPending: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, _, err := candidate.MinePending(ctx, cfg, time.Now()); err != nil {
+		t.Fatalf("candidate MinePending: %v", err)
+	}
+
+	rec := performJSONAPIRequestWithToken(t, handler, http.MethodPost, "/resolve-fork", candidate, "secret-token")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("resolve-fork status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var response forkResolutionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode resolve response: %v", err)
+	}
+	if response.Status != "adopted_candidate" || !response.Result.Adopted {
+		t.Fatalf("resolve response = %+v", response)
+	}
+
+	updated, err := blockchain.LoadState(fixture.ChainPath)
+	if err != nil {
+		t.Fatalf("load updated state: %v", err)
+	}
+	if got, want := len(updated.Chain), len(candidate.Chain); got != want {
+		t.Fatalf("updated chain length = %d, want %d", got, want)
+	}
+	if updated.Chain[len(updated.Chain)-1].Hash != candidate.Chain[len(candidate.Chain)-1].Hash {
+		t.Fatalf("updated chain tip does not match candidate tip")
 	}
 }
