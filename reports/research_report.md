@@ -356,8 +356,8 @@ Future improvements:
 2. Replace the educational KDF with Argon2id or scrypt.
 3. Add HTTPS support, stronger authentication, rate limiting, and role-based API access.
 4. Add peer-to-peer node communication.
-5. Add proof-of-authority or fork-resolution logic.
-6. Add difficulty retargeting.
+5. Add proof-of-authority.
+6. Add fork resolution based on a longest-valid-chain rule.
 
 ## References
 
