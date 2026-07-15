@@ -75,8 +75,12 @@ func (s *State) MinePending(ctx context.Context, cfg Config, now time.Time) (Blo
 		}
 	}
 
-	candidate := NewCandidateBlock(s.Chain[len(s.Chain)-1], batch, now, cfg.Difficulty)
-	mined, stats, err := Mine(ctx, candidate, cfg.Difficulty, cfg.Workers)
+	nextDifficulty, err := cfg.NextDifficulty(s.Chain)
+	if err != nil {
+		return Block{}, MiningStats{}, err
+	}
+	candidate := NewCandidateBlock(s.Chain[len(s.Chain)-1], batch, now, nextDifficulty)
+	mined, stats, err := Mine(ctx, candidate, nextDifficulty, cfg.Workers)
 	if err != nil {
 		return Block{}, stats, err
 	}

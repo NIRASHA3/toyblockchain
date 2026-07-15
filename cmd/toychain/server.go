@@ -354,7 +354,7 @@ func (s *apiServer) handleValidate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if err := blockchain.ValidateChain(state.Chain, s.cfg.Difficulty); err != nil {
+	if err := blockchain.ValidateChainWithConfig(state.Chain, s.cfg); err != nil {
 		writeJSON(w, http.StatusOK, validateResponse{Valid: false, Error: err.Error()})
 		return
 	}
@@ -383,7 +383,7 @@ func (s *apiServer) loadValidStateForAPI(w http.ResponseWriter) (blockchain.Stat
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return blockchain.State{}, false
 	}
-	if err := blockchain.ValidateChain(state.Chain, s.cfg.Difficulty); err != nil {
+	if err := blockchain.ValidateChainWithConfig(state.Chain, s.cfg); err != nil {
 		writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("invalid chain: %v", err))
 		return blockchain.State{}, false
 	}

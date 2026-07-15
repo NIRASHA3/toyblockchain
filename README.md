@@ -10,6 +10,7 @@ This project is intentionally local and educational. It does not connect to any 
 - SHA-256 block hashing
 - Previous-hash block linking
 - Per-block stored difficulty
+- Difficulty retargeting based on target block time and retarget interval
 - Merkle root stored in every block
 - Transaction hash leaves and deterministic Merkle root calculation
 - Merkle proof generation and verification
@@ -20,7 +21,7 @@ This project is intentionally local and educational. It does not connect to any 
 - Transaction nonce validation and replay protection
 - Duplicate transaction ID detection
 - Pending transaction pool
-- Proof-of-work mining with configurable difficulty
+- Proof-of-work mining with configurable and auto-retargeted difficulty
 - Concurrent mining workers
 - Full-chain validation
 - Tamper detection
@@ -141,6 +142,8 @@ Common flags:
 | `-max-block-tx` | Maximum number of transactions included in one mined block | `5` |
 | `-workers` | Number of mining workers. If `0`, it uses available CPU count | `0` |
 | `-timeout` | Mining timeout duration | `15s` |
+| `-retarget-interval` | Number of blocks between difficulty adjustments. Use `0` to disable retargeting | `5` |
+| `-target-block-time` | Target time between blocks used by difficulty retargeting | `10s` |
 
 ## Wallet Commands
 
@@ -230,7 +233,7 @@ Validation checks block structure, canonical genesis, stored hashes, recomputed 
 .\toychain.exe -data demo.json -difficulty 3 print
 ```
 
-Printed blocks include height, timestamp, difficulty, previous hash, Merkle root, nonce, block hash, and transaction count.
+Printed blocks include height, timestamp, stored difficulty, previous hash, Merkle root, nonce, block hash, and transaction count. When retargeting is enabled, later blocks may show a different difficulty from earlier blocks.
 
 ### Generate a Merkle Proof
 
@@ -468,6 +471,28 @@ A Merkle proof is a small list of sibling hashes that proves a transaction belon
 
 The CLI command `merkle-proof` demonstrates this by building a proof for a selected block height and transaction index, then verifying it locally before printing the JSON result.
 
+
+### Difficulty Retargeting
+
+Each mined block stores its own difficulty. The first non-genesis block uses the configured `-difficulty` value. After that, the node normally carries forward the latest block difficulty. When `-retarget-interval` is greater than `0`, the node reviews the previous interval of mined blocks and adjusts the next block difficulty by at most one level.
+
+The default retarget settings are:
+
+```text
+-retarget-interval 5
+-target-block-time 10s
+```
+
+If the recent blocks were mined much faster than the target time, the next difficulty increases by one, up to the maximum supported difficulty. If they were mined much slower, it decreases by one, down to the minimum supported difficulty. If the timing is close to the target range, the difficulty stays the same.
+
+Retargeting can be disabled for experiments with:
+
+```powershell
+.\toychain.exe -data demo.json -difficulty 3 -retarget-interval 0 mine
+```
+
+Validation checks that every non-genesis block satisfies its stored proof-of-work difficulty and, when retargeting is enabled, that each block's difficulty matches the expected retargeting rule for the previous chain state.
+
 ### Wallets and Signatures
 
 Each wallet uses an Ed25519 public/private key pair. The account address is derived from the public key. A transfer transaction contains the sender address, recipient address, amount, nonce, public key, and signature.
@@ -526,7 +551,8 @@ Useful future improvements:
 3. Add HTTPS support, stronger authentication, rate limiting, and role-based API access.
 4. Add peer-to-peer node communication.
 5. Add proof-of-authority or fork-resolution logic.
-6. Add difficulty retargeting.
+6. Add fork resolution based on cumulative chain work.
+7. Add proof-of-authority mode for enterprise/private-chain validation.
 
 ## Research Report
 

@@ -4,9 +4,17 @@ import "fmt"
 
 // ValidateChain verifies hashes, links, per-block proof-of-work, heights,
 // timestamps, the canonical genesis block, duplicate transactions, signatures,
-// nonces, and ledger rules.
+// nonces, and ledger rules. Retargeting is disabled in this compatibility helper;
+// use ValidateChainWithConfig when validating retargeted chains.
 func ValidateChain(chain []Block, fallbackDifficulty int) error {
-	if err := validateFallbackDifficulty(fallbackDifficulty); err != nil {
+	cfg := Config{Difficulty: fallbackDifficulty, MaxBlockTx: DefaultMaxBlockTx, RetargetInterval: 0}
+	return ValidateChainWithConfig(chain, cfg)
+}
+
+// ValidateChainWithConfig verifies the chain and also checks that each non-genesis
+// block uses the difficulty expected by the configured retargeting rules.
+func ValidateChainWithConfig(chain []Block, cfg Config) error {
+	if err := cfg.Validate(); err != nil {
 		return err
 	}
 	if err := validateChainNotEmpty(chain); err != nil {
@@ -15,24 +23,11 @@ func ValidateChain(chain []Block, fallbackDifficulty int) error {
 
 	ledger := NewLedgerState()
 	for i, block := range chain {
-		if err := validateBlockAtIndex(chain, i, block, ledger); err != nil {
+		if err := validateBlockAtIndex(chain, i, block, ledger, cfg); err != nil {
 			return err
 		}
 	}
 
-	return nil
-}
-
-func validateFallbackDifficulty(fallbackDifficulty int) error {
-	if fallbackDifficulty < MinDifficulty || fallbackDifficulty > MaxDifficulty {
-		return fmt.Errorf(
-			"%w: got %d, supported range is %d..%d",
-			ErrInvalidDifficulty,
-			fallbackDifficulty,
-			MinDifficulty,
-			MaxDifficulty,
-		)
-	}
 	return nil
 }
 
@@ -43,24 +38,28 @@ func validateChainNotEmpty(chain []Block) error {
 	return nil
 }
 
-func validateBlockAtIndex(chain []Block, index int, block Block, ledger *LedgerState) error {
+func validateBlockAtIndex(chain []Block, index int, block Block, ledger *LedgerState, cfg Config) error {
 	if err := validateBlockIntegrity(block, index); err != nil {
 		return err
 	}
 
-	if err := validateBlockPositionRules(chain, index, block); err != nil {
+	if err := validateBlockPositionRules(chain, index, block, cfg); err != nil {
 		return err
 	}
 
 	return validateBlockTransactions(block, ledger)
 }
 
-func validateBlockPositionRules(chain []Block, index int, block Block) error {
+func validateBlockPositionRules(chain []Block, index int, block Block, cfg Config) error {
 	if index == 0 {
 		return validateCanonicalGenesis(block)
 	}
 
 	if err := validateBlockDifficulty(block); err != nil {
+		return err
+	}
+
+	if err := validateExpectedDifficulty(chain[:index], block, cfg); err != nil {
 		return err
 	}
 
@@ -147,6 +146,27 @@ func validateBlockDifficulty(block Block) error {
 		)
 	}
 
+	return nil
+}
+
+func validateExpectedDifficulty(previousChain []Block, block Block, cfg Config) error {
+	// The first non-genesis block establishes the starting runtime difficulty.
+	// This lets validation use the difficulty stored in the chain instead of
+	// requiring callers to remember the exact CLI -difficulty used for block 1.
+	if block.Height == 1 {
+		return nil
+	}
+	expected, err := cfg.NextDifficulty(previousChain)
+	if err != nil {
+		return newValidationError(block.Height, "difficulty retarget", err)
+	}
+	if block.Difficulty != expected {
+		return newValidationError(
+			block.Height,
+			"difficulty retarget",
+			fmt.Errorf("expected difficulty %d got %d", expected, block.Difficulty),
+		)
+	}
 	return nil
 }
 

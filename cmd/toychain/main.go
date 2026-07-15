@@ -20,11 +20,13 @@ import (
 var errValidationFailed = errors.New("chain validation failed")
 
 type cliConfig struct {
-	dataPath   string
-	difficulty int
-	maxBlockTx int
-	workers    int
-	timeout    time.Duration
+	dataPath         string
+	difficulty       int
+	maxBlockTx       int
+	workers          int
+	timeout          time.Duration
+	retargetInterval int
+	targetBlockTime  time.Duration
 }
 
 func main() {
@@ -47,6 +49,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 	global.IntVar(&cfg.maxBlockTx, "max-block-tx", blockchain.DefaultMaxBlockTx, "maximum transactions per block")
 	global.IntVar(&cfg.workers, "workers", 0, "mining workers; 0 means runtime.NumCPU")
 	global.DurationVar(&cfg.timeout, "timeout", 15*time.Second, "mining timeout")
+	global.IntVar(&cfg.retargetInterval, "retarget-interval", blockchain.DefaultRetargetInterval, "difficulty retarget interval in blocks; 0 disables retargeting")
+	global.DurationVar(&cfg.targetBlockTime, "target-block-time", blockchain.DefaultTargetBlockTime, "target time between blocks for difficulty retargeting")
 
 	if err := global.Parse(args); err != nil {
 		return err
@@ -58,7 +62,13 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return nil
 	}
 
-	bcfg := blockchain.Config{Difficulty: cfg.difficulty, MaxBlockTx: cfg.maxBlockTx, Workers: cfg.workers}
+	bcfg := blockchain.Config{
+		Difficulty:       cfg.difficulty,
+		MaxBlockTx:       cfg.maxBlockTx,
+		Workers:          cfg.workers,
+		RetargetInterval: cfg.retargetInterval,
+		TargetBlockTime:  cfg.targetBlockTime,
+	}
 	if err := bcfg.Validate(); err != nil {
 		return err
 	}
@@ -335,7 +345,7 @@ func cmdValidate(args []string, cfg cliConfig, bcfg blockchain.Config, stdout, s
 	if err != nil {
 		return err
 	}
-	if err := blockchain.ValidateChain(state.Chain, bcfg.Difficulty); err != nil {
+	if err := blockchain.ValidateChainWithConfig(state.Chain, bcfg); err != nil {
 		fmt.Fprintf(stdout, "INVALID: %v\n", err)
 		return fmt.Errorf("%w: %v", errValidationFailed, err)
 	}
@@ -491,7 +501,7 @@ func loadValidState(cfg cliConfig, bcfg blockchain.Config) (blockchain.State, er
 	if err != nil {
 		return blockchain.State{}, err
 	}
-	if err := blockchain.ValidateChain(state.Chain, bcfg.Difficulty); err != nil {
+	if err := blockchain.ValidateChainWithConfig(state.Chain, bcfg); err != nil {
 		return blockchain.State{}, fmt.Errorf("refusing to operate on invalid chain: %w", err)
 	}
 	return state, nil
@@ -508,7 +518,9 @@ Global flags:
   -difficulty int     leading zero hex digits, 1..5 (default 3)
   -max-block-tx int   max transactions per mined block (default 5)
   -workers int        mining workers, 0 means NumCPU
-  -timeout duration   mining timeout (default 15s)
+  -timeout duration              mining timeout (default 15s)
+  -retarget-interval int         blocks per difficulty adjustment; 0 disables retargeting (default 5)
+  -target-block-time duration    target time between blocks for retargeting (default 10s)
 
 Commands:
   wallet new -out FILE -passphrase PASS       create encrypted Ed25519 wallet

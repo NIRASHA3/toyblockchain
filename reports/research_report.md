@@ -17,7 +17,7 @@ The main types are:
 
 - `Wallet`: Ed25519 key pair and derived address.
 - `Transaction`: sender, recipient, amount, creation time, memo, nonce, public key, signature, and deterministic ID.
-- `Block`: height, Unix timestamp, difficulty, transaction list, Merkle root, previous block hash, nonce, and own hash.
+- `Block`: height, Unix timestamp, stored difficulty, transaction list, Merkle root, previous block hash, nonce, and own hash.
 - `State`: confirmed chain plus pending transaction pool.
 - `LedgerState`: replayed balances, sender nonces, and seen transaction IDs.
 - `MerkleProofStep`: one sibling hash and its left/right position in a Merkle proof path.
@@ -69,6 +69,7 @@ Validation scans the chain from block 0 to the tip and fails fast on the first o
 - recomputed Merkle root equals the stored Merkle root,
 - recomputed block hash equals the stored block hash,
 - hash satisfies the block's stored proof-of-work difficulty,
+- each block difficulty matches the expected retargeting rule,
 - genesis block matches the fixed canonical genesis block,
 - every later block points to the previous block's stored hash,
 - timestamps do not move backwards,
@@ -191,7 +192,25 @@ Example single-worker mining trend:
 
 The trend is not linear in the difficulty number. The expected work grows exponentially because each extra zero hex digit adds another 1-in-16 condition.
 
-## 11. Experiment 3: Merkle proof generation
+
+## 11. Difficulty retargeting
+
+The simulator supports difficulty retargeting. Each block stores its own difficulty, and mining chooses the next block difficulty from the previous chain state. The first non-genesis block uses the configured starting difficulty. Later blocks normally carry forward the previous block difficulty. After a completed retarget interval, the node compares the recent mining time against the configured target block time.
+
+The default settings are:
+
+```text
+retarget interval: 5 blocks
+target block time: 10 seconds
+minimum difficulty: 1
+maximum difficulty: 5
+```
+
+The adjustment is intentionally conservative for an educational project. The difficulty changes by at most one level per retarget interval. If the previous interval was much faster than expected, the next difficulty increases by one. If it was much slower than expected, the next difficulty decreases by one. Otherwise, the difficulty remains unchanged.
+
+This improves the simulator because proof-of-work no longer depends only on a fixed command-line value. The chain can adapt its mining difficulty while still keeping validation deterministic. During validation, the verifier recalculates the expected difficulty for each block from the previous chain state and rejects blocks whose stored difficulty does not match the retarget rule.
+
+## 12. Experiment 3: Merkle proof generation
 
 ### Setup
 
@@ -226,7 +245,7 @@ The command prints JSON similar to:
 
 The proof contains only the sibling hashes needed to reconstruct the Merkle root for the selected transaction. If the transaction hash, proof path, or Merkle root is changed, verification returns false. This demonstrates how block membership can be checked without re-hashing every transaction in the block.
 
-## 12. Experiment 4: REST API read and write workflow
+## 13. Experiment 4: REST API read and write workflow
 
 ### Setup
 
@@ -262,7 +281,7 @@ The server returns JSON responses. `/validate` returns `valid: true` for a corre
 
 This demonstrates how the CLI blockchain can be exposed through a backend-style interface while preserving safer wallet handling. The API accepts signed transaction data, but wallet decryption and signing remain local to the client. If a submitted transaction is unsigned, has a mismatched ID, has an invalid signature, uses the wrong nonce, duplicates an existing transaction ID, or overspends, the API rejects it with a structured JSON error.
 
-## 13. Discussion
+## 14. Discussion
 
 ### Why previous-hash links make old tampering impractical in real chains
 
@@ -282,7 +301,7 @@ Another simple private-network alternative is proof-of-authority, where known au
 
 The project now includes a Merkle root and a proof command, but it still stores the full transactions inside each local block file.
 
-## 14. Experiment 5: REST API security controls
+## 15. Experiment 5: REST API security controls
 
 ### Setup
 
@@ -317,7 +336,7 @@ curl -X POST http://127.0.0.1:8080/mine \
 
 The security controls are intentionally simple and local. Binding to localhost by default prevents accidental exposure on the local network. Optional token protection separates read-only inspection from state-changing operations. This is not full production security, but it is a useful enterprise-style hardening step for a local educational node.
 
-## 15. Constraints and future improvements
+## 16. Constraints and future improvements
 
 This implementation is suitable for a local CLI blockchain learning project. It is not production money software.
 
