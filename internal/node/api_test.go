@@ -159,24 +159,6 @@ func TestHandlerRejectsWrongMethod(t *testing.T) {
 	}
 }
 
-func getJSON(t *testing.T, url string, target any) {
-	t.Helper()
-
-	resp, err := http.Get(url)
-	if err != nil {
-		t.Fatalf("GET %s: %v", url, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET %s returned status %d", url, resp.StatusCode)
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(target); err != nil {
-		t.Fatalf("decode %s response: %v", url, err)
-	}
-}
-
 func TestTransactionEndpointGossipsToPeerAndDeduplicates(t *testing.T) {
 	alice, err := blockchain.NewWallet()
 	if err != nil {
@@ -187,17 +169,7 @@ func TestTransactionEndpointGossipsToPeerAndDeduplicates(t *testing.T) {
 		t.Fatalf("new bob wallet: %v", err)
 	}
 
-	nodeA, err := New(testNodeConfig(t))
-	if err != nil {
-		t.Fatalf("new node A: %v", err)
-	}
-	nodeB, err := New(testNodeConfig(t))
-	if err != nil {
-		t.Fatalf("new node B: %v", err)
-	}
-
-	fundWallet(t, nodeA, alice.Address)
-	fundWallet(t, nodeB, alice.Address)
+	nodeA, nodeB := newSyncedFundedNodePair(t, alice.Address)
 
 	serverA := httptest.NewServer(nodeA.Handler())
 	defer serverA.Close()
@@ -329,6 +301,148 @@ func TestPeerTransactionEndpointAcceptsAndDoesNotForwardToOrigin(t *testing.T) {
 	}
 }
 
+func TestMineEndpointGossipsBlockToPeerAndClearsPending(t *testing.T) {
+	alice, err := blockchain.NewWallet()
+	if err != nil {
+		t.Fatalf("new alice wallet: %v", err)
+	}
+	bob, err := blockchain.NewWallet()
+	if err != nil {
+		t.Fatalf("new bob wallet: %v", err)
+	}
+
+	nodeA, nodeB := newSyncedFundedNodePair(t, alice.Address)
+
+	serverA := httptest.NewServer(nodeA.Handler())
+	defer serverA.Close()
+	serverB := httptest.NewServer(nodeB.Handler())
+	defer serverB.Close()
+
+	nodeA.SetSelfURL(serverA.URL)
+	nodeB.SetSelfURL(serverB.URL)
+	nodeA.AddPeer(serverB.URL)
+	nodeB.AddPeer(serverA.URL)
+
+	tx, err := blockchain.NewSignedTransfer(alice, bob.Address, 25, 1, "block gossip test", time.Now())
+	if err != nil {
+		t.Fatalf("new signed transfer: %v", err)
+	}
+
+	if _, err := nodeA.SubmitTransaction(context.Background(), tx); err != nil {
+		t.Fatalf("submit tx to node A: %v", err)
+	}
+
+	var before pendingResponse
+	getJSON(t, serverB.URL+"/pending", &before)
+	if before.Count != 1 {
+		t.Fatalf("expected node B pending count 1 before mining, got %d", before.Count)
+	}
+
+	var mined mineResponse
+	postJSON(t, serverA.URL+"/mine", nil, http.StatusCreated, &mined)
+
+	if mined.Block.Height != 2 {
+		t.Fatalf("expected mined block height 2, got %d", mined.Block.Height)
+	}
+	if mined.Gossiped != 1 {
+		t.Fatalf("expected mined block to be gossiped to one peer, got %d", mined.Gossiped)
+	}
+
+	var statusA Status
+	getJSON(t, serverA.URL+"/status", &statusA)
+	if statusA.Height != 2 {
+		t.Fatalf("expected node A height 2, got %d", statusA.Height)
+	}
+	if statusA.PendingCount != 0 {
+		t.Fatalf("expected node A pending count 0, got %d", statusA.PendingCount)
+	}
+
+	var statusB Status
+	getJSON(t, serverB.URL+"/status", &statusB)
+	if statusB.Height != 2 {
+		t.Fatalf("expected node B height 2 after block gossip, got %d", statusB.Height)
+	}
+	if statusB.PendingCount != 0 {
+		t.Fatalf("expected node B pending count 0 after accepted block, got %d", statusB.PendingCount)
+	}
+	if statusB.HeadHash != mined.Block.Hash {
+		t.Fatalf("expected node B head hash %s, got %s", mined.Block.Hash, statusB.HeadHash)
+	}
+}
+
+func TestPeerBlockEndpointDeduplicatesBlock(t *testing.T) {
+	miner, err := New(testNodeConfig(t))
+	if err != nil {
+		t.Fatalf("new miner node: %v", err)
+	}
+
+	peer, err := New(testNodeConfig(t))
+	if err != nil {
+		t.Fatalf("new peer node: %v", err)
+	}
+
+	tx, err := blockchain.NewFaucet("alice", 100, "block duplicate test", time.Now())
+	if err != nil {
+		t.Fatalf("new faucet tx: %v", err)
+	}
+
+	if _, err := miner.AddTransaction(tx); err != nil {
+		t.Fatalf("add transaction to miner: %v", err)
+	}
+
+	block, _, err := miner.MinePending(context.Background(), time.Now())
+	if err != nil {
+		t.Fatalf("mine block: %v", err)
+	}
+
+	server := httptest.NewServer(peer.Handler())
+	defer server.Close()
+	peer.SetSelfURL(server.URL)
+
+	request := blockGossipRequest{
+		Origin: "http://127.0.0.1:9999",
+		Block:  block,
+	}
+
+	var first peerBlockResponse
+	postJSON(t, server.URL+"/peer/blocks", request, http.StatusCreated, &first)
+
+	if !first.Accepted {
+		t.Fatal("expected first block to be accepted")
+	}
+
+	var duplicate peerBlockResponse
+	postJSON(t, server.URL+"/peer/blocks", request, http.StatusOK, &duplicate)
+
+	if duplicate.Accepted {
+		t.Fatal("expected duplicate block to be ignored")
+	}
+}
+
+func newSyncedFundedNodePair(t *testing.T, fundedAddress string) (*Node, *Node) {
+	t.Helper()
+
+	cfgA := testNodeConfig(t)
+	nodeA, err := New(cfgA)
+	if err != nil {
+		t.Fatalf("new node A: %v", err)
+	}
+
+	fundWallet(t, nodeA, fundedAddress)
+
+	cfgB := testNodeConfig(t)
+	if err := blockchain.SaveState(cfgB.DataPath, nodeA.Snapshot()); err != nil {
+		t.Fatalf("save node A state for node B: %v", err)
+	}
+
+	nodeB, err := New(cfgB)
+	if err != nil {
+		t.Fatalf("new node B from synced state: %v", err)
+	}
+
+	return nodeA, nodeB
+}
+
 func fundWallet(t *testing.T, n *Node, address string) {
 	t.Helper()
 
@@ -346,15 +460,39 @@ func fundWallet(t *testing.T, n *Node, address string) {
 	}
 }
 
+func getJSON(t *testing.T, url string, target any) {
+	t.Helper()
+
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("GET %s: %v", url, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s returned status %d", url, resp.StatusCode)
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(target); err != nil {
+		t.Fatalf("decode %s response: %v", url, err)
+	}
+}
+
 func postJSON(t *testing.T, url string, body any, expectedStatus int, target any) {
 	t.Helper()
 
-	data, err := json.Marshal(body)
-	if err != nil {
-		t.Fatalf("marshal request body: %v", err)
+	var reader *bytes.Reader
+	if body == nil {
+		reader = bytes.NewReader(nil)
+	} else {
+		data, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("marshal request body: %v", err)
+		}
+		reader = bytes.NewReader(data)
 	}
 
-	resp, err := http.Post(url, "application/json", bytes.NewReader(data))
+	resp, err := http.Post(url, "application/json", reader)
 	if err != nil {
 		t.Fatalf("POST %s: %v", url, err)
 	}

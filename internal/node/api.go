@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"toyblockchain/internal/blockchain"
 )
@@ -65,6 +66,21 @@ type transactionResponse struct {
 	Errors   []string `json:"errors,omitempty"`
 }
 
+type mineResponse struct {
+	Block    blockchain.Block       `json:"block"`
+	Stats    blockchain.MiningStats `json:"stats"`
+	Gossiped int                    `json:"gossiped"`
+	Errors   []string               `json:"errors,omitempty"`
+}
+
+type peerBlockResponse struct {
+	Height   int      `json:"height"`
+	Hash     string   `json:"hash"`
+	Accepted bool     `json:"accepted"`
+	Gossiped int      `json:"gossiped"`
+	Errors   []string `json:"errors,omitempty"`
+}
+
 // Handler returns the HTTP API for this networked node.
 func (n *Node) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -80,6 +96,8 @@ func (n *Node) Handler() http.Handler {
 	mux.HandleFunc("/validate", n.handleValidate)
 	mux.HandleFunc("/transactions", n.handleSubmitTransaction)
 	mux.HandleFunc("/peer/transactions", n.handlePeerTransaction)
+	mux.HandleFunc("/mine", n.handleMine)
+	mux.HandleFunc("/peer/blocks", n.handlePeerBlock)
 
 	return mux
 }
@@ -293,6 +311,56 @@ func (n *Node) handlePeerTransaction(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, status, transactionResponse{
 		ID:       result.ID,
+		Accepted: result.Accepted,
+		Gossiped: result.Gossiped,
+		Errors:   result.Errors,
+	})
+}
+
+func (n *Node) handleMine(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+
+	block, stats, result, err := n.MineAndGossip(r.Context(), time.Now())
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, mineResponse{
+		Block:    block,
+		Stats:    stats,
+		Gossiped: result.Gossiped,
+		Errors:   result.Errors,
+	})
+}
+
+func (n *Node) handlePeerBlock(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+
+	var request blockGossipRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("decode peer block: %v", err))
+		return
+	}
+
+	result, err := n.ReceivePeerBlock(r.Context(), request.Block, request.Origin)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	status := http.StatusOK
+	if result.Accepted {
+		status = http.StatusCreated
+	}
+
+	writeJSON(w, status, peerBlockResponse{
+		Height:   result.Height,
+		Hash:     result.Hash,
 		Accepted: result.Accepted,
 		Gossiped: result.Gossiped,
 		Errors:   result.Errors,
