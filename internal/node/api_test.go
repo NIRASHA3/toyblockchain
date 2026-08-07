@@ -1,9 +1,12 @@
 package node
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -171,5 +174,199 @@ func getJSON(t *testing.T, url string, target any) {
 
 	if err := json.NewDecoder(resp.Body).Decode(target); err != nil {
 		t.Fatalf("decode %s response: %v", url, err)
+	}
+}
+
+func TestTransactionEndpointGossipsToPeerAndDeduplicates(t *testing.T) {
+	alice, err := blockchain.NewWallet()
+	if err != nil {
+		t.Fatalf("new alice wallet: %v", err)
+	}
+	bob, err := blockchain.NewWallet()
+	if err != nil {
+		t.Fatalf("new bob wallet: %v", err)
+	}
+
+	nodeA, err := New(testNodeConfig(t))
+	if err != nil {
+		t.Fatalf("new node A: %v", err)
+	}
+	nodeB, err := New(testNodeConfig(t))
+	if err != nil {
+		t.Fatalf("new node B: %v", err)
+	}
+
+	fundWallet(t, nodeA, alice.Address)
+	fundWallet(t, nodeB, alice.Address)
+
+	serverA := httptest.NewServer(nodeA.Handler())
+	defer serverA.Close()
+	serverB := httptest.NewServer(nodeB.Handler())
+	defer serverB.Close()
+
+	nodeA.SetSelfURL(serverA.URL)
+	nodeB.SetSelfURL(serverB.URL)
+	nodeA.AddPeer(serverB.URL)
+	nodeB.AddPeer(serverA.URL)
+
+	tx, err := blockchain.NewSignedTransfer(alice, bob.Address, 25, 1, "gossip test", time.Now())
+	if err != nil {
+		t.Fatalf("new signed transfer: %v", err)
+	}
+
+	var first transactionResponse
+	postJSON(t, serverA.URL+"/transactions", tx, http.StatusCreated, &first)
+
+	if !first.Accepted {
+		t.Fatal("expected transaction to be accepted by node A")
+	}
+	if first.Gossiped != 1 {
+		t.Fatalf("expected transaction to be gossiped to one peer, got %d", first.Gossiped)
+	}
+
+	var nodeBPending pendingResponse
+	getJSON(t, serverB.URL+"/pending", &nodeBPending)
+
+	if nodeBPending.Count != 1 {
+		t.Fatalf("expected node B pending count 1, got %d", nodeBPending.Count)
+	}
+	if nodeBPending.Pending[0].ID != tx.ID {
+		t.Fatalf("expected node B to receive tx %s, got %s", tx.ID, nodeBPending.Pending[0].ID)
+	}
+
+	var duplicate transactionResponse
+	postJSON(t, serverA.URL+"/transactions", tx, http.StatusOK, &duplicate)
+
+	if duplicate.Accepted {
+		t.Fatal("expected duplicate transaction to be ignored")
+	}
+	if duplicate.Gossiped != 0 {
+		t.Fatalf("expected duplicate transaction not to be gossiped, got %d", duplicate.Gossiped)
+	}
+}
+
+func TestTransactionEndpointRejectsInvalidSignature(t *testing.T) {
+	alice, err := blockchain.NewWallet()
+	if err != nil {
+		t.Fatalf("new alice wallet: %v", err)
+	}
+	bob, err := blockchain.NewWallet()
+	if err != nil {
+		t.Fatalf("new bob wallet: %v", err)
+	}
+
+	n, err := New(testNodeConfig(t))
+	if err != nil {
+		t.Fatalf("new node: %v", err)
+	}
+	fundWallet(t, n, alice.Address)
+
+	server := httptest.NewServer(n.Handler())
+	defer server.Close()
+
+	tx, err := blockchain.NewSignedTransfer(alice, bob.Address, 25, 1, "invalid signature test", time.Now())
+	if err != nil {
+		t.Fatalf("new signed transfer: %v", err)
+	}
+
+	tx.Signature = strings.Repeat("00", 64)
+	tx.ID = tx.ComputeID()
+
+	var response errorResponse
+	postJSON(t, server.URL+"/transactions", tx, http.StatusBadRequest, &response)
+
+	var pending pendingResponse
+	getJSON(t, server.URL+"/pending", &pending)
+
+	if pending.Count != 0 {
+		t.Fatalf("expected invalid transaction not to enter pending pool, got %d", pending.Count)
+	}
+}
+
+func TestPeerTransactionEndpointAcceptsAndDoesNotForwardToOrigin(t *testing.T) {
+	alice, err := blockchain.NewWallet()
+	if err != nil {
+		t.Fatalf("new alice wallet: %v", err)
+	}
+	bob, err := blockchain.NewWallet()
+	if err != nil {
+		t.Fatalf("new bob wallet: %v", err)
+	}
+
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("origin peer should not receive transaction back")
+	}))
+	defer peer.Close()
+
+	n, err := New(testNodeConfig(t, peer.URL))
+	if err != nil {
+		t.Fatalf("new node: %v", err)
+	}
+	fundWallet(t, n, alice.Address)
+
+	server := httptest.NewServer(n.Handler())
+	defer server.Close()
+	n.SetSelfURL(server.URL)
+
+	tx, err := blockchain.NewSignedTransfer(alice, bob.Address, 25, 1, "origin skip test", time.Now())
+	if err != nil {
+		t.Fatalf("new signed transfer: %v", err)
+	}
+
+	request := transactionGossipRequest{
+		Origin:      peer.URL,
+		Transaction: tx,
+	}
+
+	var response transactionResponse
+	postJSON(t, server.URL+"/peer/transactions", request, http.StatusCreated, &response)
+
+	if !response.Accepted {
+		t.Fatal("expected peer transaction to be accepted")
+	}
+	if response.Gossiped != 0 {
+		t.Fatalf("expected transaction not to be sent back to origin, got gossiped=%d", response.Gossiped)
+	}
+}
+
+func fundWallet(t *testing.T, n *Node, address string) {
+	t.Helper()
+
+	tx, err := blockchain.NewFaucet(address, 100, "test funding", time.Now())
+	if err != nil {
+		t.Fatalf("new faucet transaction: %v", err)
+	}
+
+	if _, err := n.AddTransaction(tx); err != nil {
+		t.Fatalf("add faucet transaction: %v", err)
+	}
+
+	if _, _, err := n.MinePending(context.Background(), time.Now()); err != nil {
+		t.Fatalf("mine funding block: %v", err)
+	}
+}
+
+func postJSON(t *testing.T, url string, body any, expectedStatus int, target any) {
+	t.Helper()
+
+	data, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal request body: %v", err)
+	}
+
+	resp, err := http.Post(url, "application/json", bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("POST %s: %v", url, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != expectedStatus {
+		t.Fatalf("POST %s returned status %d, expected %d", url, resp.StatusCode, expectedStatus)
+	}
+
+	if target != nil {
+		if err := json.NewDecoder(resp.Body).Decode(target); err != nil {
+			t.Fatalf("decode POST %s response: %v", url, err)
+		}
 	}
 }

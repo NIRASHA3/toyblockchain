@@ -17,6 +17,7 @@ import (
 type Config struct {
 	DataPath    string
 	ChainConfig blockchain.Config
+	SelfURL     string
 	Peers       []string
 	Logger      *log.Logger
 }
@@ -35,6 +36,7 @@ type Node struct {
 
 	dataPath string
 	cfg      blockchain.Config
+	selfURL  string
 	state    blockchain.State
 
 	peers      map[string]struct{}
@@ -69,6 +71,7 @@ func New(cfg Config) (*Node, error) {
 	n := &Node{
 		dataPath:   cfg.DataPath,
 		cfg:        cfg.ChainConfig,
+		selfURL:    normalizePeer(cfg.SelfURL),
 		state:      cloneState(state),
 		peers:      make(map[string]struct{}),
 		seenTx:     make(map[string]struct{}),
@@ -134,6 +137,23 @@ func (n *Node) AddPeer(peer string) bool {
 
 	n.peers[normalized] = struct{}{}
 	return true
+}
+
+// SelfURL returns the node's own advertised base URL.
+func (n *Node) SelfURL() string {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
+	return n.selfURL
+}
+
+// SetSelfURL updates the node's own advertised base URL.
+// This is useful in tests where httptest assigns the URL after the node is created.
+func (n *Node) SetSelfURL(url string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	n.selfURL = normalizePeer(url)
 }
 
 // AddTransaction validates and stores a transaction if it has not already been seen.

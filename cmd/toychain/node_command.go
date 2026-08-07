@@ -27,9 +27,12 @@ func cmdNode(args []string, cfg cliConfig, bcfg blockchain.Config, stdout, stder
 
 	logger := log.New(stderr, fmt.Sprintf("[node %s] ", *addr), log.LstdFlags)
 
+	selfURL := nodeBaseURL(*addr)
+
 	n, err := networknode.New(networknode.Config{
 		DataPath:    cfg.dataPath,
 		ChainConfig: bcfg,
+		SelfURL:     selfURL,
 		Peers:       splitPeerList(*peersRaw),
 		Logger:      logger,
 	})
@@ -44,6 +47,7 @@ func cmdNode(args []string, cfg cliConfig, bcfg blockchain.Config, stdout, stder
 	}
 
 	fmt.Fprintf(stdout, "serving networked node on %s using state %s\n", *addr, cfg.dataPath)
+	fmt.Fprintf(stdout, "advertised node URL: %s\n", selfURL)
 	if peers := n.Peers(); len(peers) > 0 {
 		fmt.Fprintf(stdout, "configured peers: %s\n", strings.Join(peers, ", "))
 	} else {
@@ -74,4 +78,19 @@ func splitPeerList(raw string) []string {
 	}
 
 	return peers
+}
+
+func nodeBaseURL(addr string) string {
+	addr = strings.TrimSpace(addr)
+	addr = strings.TrimRight(addr, "/")
+
+	if strings.HasPrefix(addr, "http://") || strings.HasPrefix(addr, "https://") {
+		return addr
+	}
+
+	if strings.HasPrefix(addr, ":") {
+		return "http://127.0.0.1" + addr
+	}
+
+	return "http://" + addr
 }

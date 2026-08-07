@@ -58,6 +58,13 @@ type errorResponse struct {
 	Error string `json:"error"`
 }
 
+type transactionResponse struct {
+	ID       string   `json:"id"`
+	Accepted bool     `json:"accepted"`
+	Gossiped int      `json:"gossiped"`
+	Errors   []string `json:"errors,omitempty"`
+}
+
 // Handler returns the HTTP API for this networked node.
 func (n *Node) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -71,6 +78,8 @@ func (n *Node) Handler() http.Handler {
 	mux.HandleFunc("/pending", n.handlePending)
 	mux.HandleFunc("/balances", n.handleBalances)
 	mux.HandleFunc("/validate", n.handleValidate)
+	mux.HandleFunc("/transactions", n.handleSubmitTransaction)
+	mux.HandleFunc("/peer/transactions", n.handlePeerTransaction)
 
 	return mux
 }
@@ -227,6 +236,66 @@ func (n *Node) handleValidate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, validateResponse{
 		Valid:         true,
 		BlocksChecked: len(state.Chain),
+	})
+}
+
+func (n *Node) handleSubmitTransaction(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+
+	var tx blockchain.Transaction
+	if err := json.NewDecoder(r.Body).Decode(&tx); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("decode transaction: %v", err))
+		return
+	}
+
+	result, err := n.SubmitTransaction(r.Context(), tx)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	status := http.StatusOK
+	if result.Accepted {
+		status = http.StatusCreated
+	}
+
+	writeJSON(w, status, transactionResponse{
+		ID:       result.ID,
+		Accepted: result.Accepted,
+		Gossiped: result.Gossiped,
+		Errors:   result.Errors,
+	})
+}
+
+func (n *Node) handlePeerTransaction(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+
+	var request transactionGossipRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("decode peer transaction: %v", err))
+		return
+	}
+
+	result, err := n.ReceivePeerTransaction(r.Context(), request.Transaction, request.Origin)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	status := http.StatusOK
+	if result.Accepted {
+		status = http.StatusCreated
+	}
+
+	writeJSON(w, status, transactionResponse{
+		ID:       result.ID,
+		Accepted: result.Accepted,
+		Gossiped: result.Gossiped,
+		Errors:   result.Errors,
 	})
 }
 
