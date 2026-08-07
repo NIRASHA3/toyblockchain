@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -12,6 +13,8 @@ import (
 
 	"toyblockchain/internal/blockchain"
 )
+
+var ErrBlockDoesNotExtendHead = errors.New("block does not extend local head")
 
 // Config contains the local node settings used by the network layer.
 type Config struct {
@@ -121,6 +124,23 @@ func (n *Node) Peers() []string {
 	return sortedKeys(n.peers)
 }
 
+// SelfURL returns the node's own advertised base URL.
+func (n *Node) SelfURL() string {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
+	return n.selfURL
+}
+
+// SetSelfURL updates the node's own advertised base URL.
+// This is useful in tests where httptest assigns the URL after the node is created.
+func (n *Node) SetSelfURL(url string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	n.selfURL = normalizePeer(url)
+}
+
 // AddPeer adds a peer address to the local peer set.
 func (n *Node) AddPeer(peer string) bool {
 	normalized := normalizePeer(peer)
@@ -137,23 +157,6 @@ func (n *Node) AddPeer(peer string) bool {
 
 	n.peers[normalized] = struct{}{}
 	return true
-}
-
-// SelfURL returns the node's own advertised base URL.
-func (n *Node) SelfURL() string {
-	n.mu.RLock()
-	defer n.mu.RUnlock()
-
-	return n.selfURL
-}
-
-// SetSelfURL updates the node's own advertised base URL.
-// This is useful in tests where httptest assigns the URL after the node is created.
-func (n *Node) SetSelfURL(url string) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-
-	n.selfURL = normalizePeer(url)
 }
 
 // AddTransaction validates and stores a transaction if it has not already been seen.
@@ -217,10 +220,10 @@ func (n *Node) AcceptBlock(block blockchain.Block) (bool, error) {
 
 	head := n.state.Chain[len(n.state.Chain)-1]
 	if block.PrevHash != head.Hash {
-		return false, fmt.Errorf("block does not extend local head: got prev_hash %s, expected %s", block.PrevHash, head.Hash)
+		return false, fmt.Errorf("%w: got prev_hash %s, expected %s", ErrBlockDoesNotExtendHead, block.PrevHash, head.Hash)
 	}
 	if block.Height != head.Height+1 {
-		return false, fmt.Errorf("block height %d does not extend local height %d", block.Height, head.Height)
+		return false, fmt.Errorf("%w: block height %d does not extend local height %d", ErrBlockDoesNotExtendHead, block.Height, head.Height)
 	}
 
 	candidate := cloneState(n.state)
@@ -257,6 +260,12 @@ func (n *Node) indexSeenLocked() {
 	for _, tx := range n.state.Pending {
 		n.seenTx[tx.ID] = struct{}{}
 	}
+}
+
+func (n *Node) resetSeenLocked() {
+	n.seenTx = make(map[string]struct{})
+	n.seenBlocks = make(map[string]struct{})
+	n.indexSeenLocked()
 }
 
 func normalizePeer(peer string) string {

@@ -76,11 +76,12 @@ type mineResponse struct {
 }
 
 type peerBlockResponse struct {
-	Height   int      `json:"height"`
-	Hash     string   `json:"hash"`
-	Accepted bool     `json:"accepted"`
-	Gossiped int      `json:"gossiped"`
-	Errors   []string `json:"errors,omitempty"`
+	Height   int          `json:"height"`
+	Hash     string       `json:"hash"`
+	Accepted bool         `json:"accepted"`
+	Gossiped int          `json:"gossiped"`
+	Reorg    *ReorgResult `json:"reorg,omitempty"`
+	Errors   []string     `json:"errors,omitempty"`
 }
 
 type syncRequest struct {
@@ -116,6 +117,7 @@ func (n *Node) Handler() http.Handler {
 	mux.HandleFunc("/mine", n.handleMine)
 	mux.HandleFunc("/peer/blocks", n.handlePeerBlock)
 	mux.HandleFunc("/sync", n.handleSync)
+	mux.HandleFunc("/resolve-fork", n.handleResolveFork)
 
 	mux.HandleFunc("/peer/status", n.handleStatus)
 	mux.HandleFunc("/peer/blocks/", n.handlePeerBlockByHeight)
@@ -395,6 +397,7 @@ func (n *Node) handlePeerBlock(w http.ResponseWriter, r *http.Request) {
 		Hash:     result.Hash,
 		Accepted: result.Accepted,
 		Gossiped: result.Gossiped,
+		Reorg:    result.Reorg,
 		Errors:   result.Errors,
 	})
 }
@@ -404,20 +407,9 @@ func (n *Node) handleSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var request syncRequest
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil && !errors.Is(err, io.EOF) {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("decode sync request: %v", err))
+	peer, ok := n.peerFromRequest(w, r, "sync")
+	if !ok {
 		return
-	}
-
-	peer := normalizePeer(request.Peer)
-	if peer == "" {
-		peers := n.Peers()
-		if len(peers) == 0 {
-			writeError(w, http.StatusBadRequest, "sync peer is required when node has no configured peers")
-			return
-		}
-		peer = peers[0]
 	}
 
 	result, err := n.SyncFromPeer(r.Context(), peer)
@@ -436,6 +428,45 @@ func (n *Node) handleSync(w http.ResponseWriter, r *http.Request) {
 		Synced:           result.Synced,
 		Errors:           result.Errors,
 	})
+}
+
+func (n *Node) handleResolveFork(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+
+	peer, ok := n.peerFromRequest(w, r, "fork resolution")
+	if !ok {
+		return
+	}
+
+	result, err := n.ResolveForkFromPeer(r.Context(), peer)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (n *Node) peerFromRequest(w http.ResponseWriter, r *http.Request, action string) (string, bool) {
+	var request syncRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("decode %s request: %v", action, err))
+		return "", false
+	}
+
+	peer := normalizePeer(request.Peer)
+	if peer == "" {
+		peers := n.Peers()
+		if len(peers) == 0 {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("%s peer is required when node has no configured peers", action))
+			return "", false
+		}
+		peer = peers[0]
+	}
+
+	return peer, true
 }
 
 func requireMethod(w http.ResponseWriter, r *http.Request, method string) bool {

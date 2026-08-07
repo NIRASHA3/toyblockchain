@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -35,11 +36,12 @@ type TransactionGossipResult struct {
 
 // BlockGossipResult describes what happened after a block was mined or received.
 type BlockGossipResult struct {
-	Height   int      `json:"height"`
-	Hash     string   `json:"hash"`
-	Accepted bool     `json:"accepted"`
-	Gossiped int      `json:"gossiped"`
-	Errors   []string `json:"errors,omitempty"`
+	Height   int          `json:"height"`
+	Hash     string       `json:"hash"`
+	Accepted bool         `json:"accepted"`
+	Gossiped int          `json:"gossiped"`
+	Reorg    *ReorgResult `json:"reorg,omitempty"`
+	Errors   []string     `json:"errors,omitempty"`
 }
 
 // SubmitTransaction accepts a client-submitted transaction and gossips it to peers.
@@ -71,8 +73,10 @@ func (n *Node) MineAndGossip(ctx context.Context, now time.Time) (blockchain.Blo
 	return block, stats, result, nil
 }
 
-// ReceivePeerBlock accepts a block received from a peer and gossips it onward only
-// if it is new, valid, and extends the local head.
+// ReceivePeerBlock accepts a block received from a peer. If it directly extends the
+// local head, it is appended and gossiped onward. If it does not extend the local head,
+// the node treats it as possible fork evidence and attempts a full fork resolution
+// from the origin peer.
 func (n *Node) ReceivePeerBlock(ctx context.Context, block blockchain.Block, origin string) (BlockGossipResult, error) {
 	result := BlockGossipResult{
 		Height: block.Height,
@@ -81,6 +85,17 @@ func (n *Node) ReceivePeerBlock(ctx context.Context, block blockchain.Block, ori
 
 	accepted, err := n.AcceptBlock(block)
 	if err != nil {
+		if errors.Is(err, ErrBlockDoesNotExtendHead) && normalizePeer(origin) != "" {
+			reorg, reorgErr := n.ResolveForkFromPeer(ctx, origin)
+			if reorgErr != nil {
+				return result, fmt.Errorf("%w; fork resolution from %s failed: %v", err, origin, reorgErr)
+			}
+
+			result.Reorg = &reorg
+			n.logger.Printf("competing block received height=%d hash=%s peer=%s adopted=%t decision=%s", block.Height, block.Hash, origin, reorg.Adopted, reorg.Decision)
+			return result, nil
+		}
+
 		return result, err
 	}
 
