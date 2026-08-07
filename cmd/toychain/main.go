@@ -104,6 +104,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return cmdMerkleProof(commandArgs, cfg, bcfg, stdout, stderr)
 	case "serve":
 		return cmdServe(commandArgs, cfg, bcfg, stdout, stderr)
+	case "node":
+		return cmdNode(commandArgs, cfg, bcfg, stdout, stderr)
 	case "resolve-fork":
 		return cmdResolveFork(commandArgs, cfg, bcfg, stdout, stderr)
 	case "tamper":
@@ -586,6 +588,7 @@ Commands:
   merkle-proof -height N -tx I                print a transaction Merkle proof
   serve [-addr 127.0.0.1:8080] [-api-token TOKEN]
                                              start REST API server
+  node -addr 127.0.0.1:8081 -peers URLS       start networked node HTTP service
   resolve-fork -candidate FILE [-dry-run]     compare with a competing state and adopt it if longer and valid
   tamper -height N -tx I -amount N            deliberately alter stored data for demo`))
 }
