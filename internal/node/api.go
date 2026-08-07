@@ -2,7 +2,9 @@ package node
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -81,6 +83,21 @@ type peerBlockResponse struct {
 	Errors   []string `json:"errors,omitempty"`
 }
 
+type syncRequest struct {
+	Peer string `json:"peer"`
+}
+
+type syncResponse struct {
+	Peer             string   `json:"peer"`
+	BeforeHeight     int      `json:"before_height"`
+	PeerHeight       int      `json:"peer_height"`
+	AfterHeight      int      `json:"after_height"`
+	HeadHash         string   `json:"head_hash"`
+	BlocksDownloaded int      `json:"blocks_downloaded"`
+	Synced           bool     `json:"synced"`
+	Errors           []string `json:"errors,omitempty"`
+}
+
 // Handler returns the HTTP API for this networked node.
 func (n *Node) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -98,6 +115,10 @@ func (n *Node) Handler() http.Handler {
 	mux.HandleFunc("/peer/transactions", n.handlePeerTransaction)
 	mux.HandleFunc("/mine", n.handleMine)
 	mux.HandleFunc("/peer/blocks", n.handlePeerBlock)
+	mux.HandleFunc("/sync", n.handleSync)
+
+	mux.HandleFunc("/peer/status", n.handleStatus)
+	mux.HandleFunc("/peer/blocks/", n.handlePeerBlockByHeight)
 
 	return mux
 }
@@ -170,7 +191,18 @@ func (n *Node) handleBlockByHeight(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rawHeight := strings.TrimPrefix(r.URL.Path, "/blocks/")
+	n.writeBlockByHeight(w, strings.TrimPrefix(r.URL.Path, "/blocks/"))
+}
+
+func (n *Node) handlePeerBlockByHeight(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodGet) {
+		return
+	}
+
+	n.writeBlockByHeight(w, strings.TrimPrefix(r.URL.Path, "/peer/blocks/"))
+}
+
+func (n *Node) writeBlockByHeight(w http.ResponseWriter, rawHeight string) {
 	if rawHeight == "" {
 		writeError(w, http.StatusBadRequest, "missing block height")
 		return
@@ -364,6 +396,45 @@ func (n *Node) handlePeerBlock(w http.ResponseWriter, r *http.Request) {
 		Accepted: result.Accepted,
 		Gossiped: result.Gossiped,
 		Errors:   result.Errors,
+	})
+}
+
+func (n *Node) handleSync(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+
+	var request syncRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("decode sync request: %v", err))
+		return
+	}
+
+	peer := normalizePeer(request.Peer)
+	if peer == "" {
+		peers := n.Peers()
+		if len(peers) == 0 {
+			writeError(w, http.StatusBadRequest, "sync peer is required when node has no configured peers")
+			return
+		}
+		peer = peers[0]
+	}
+
+	result, err := n.SyncFromPeer(r.Context(), peer)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, syncResponse{
+		Peer:             result.Peer,
+		BeforeHeight:     result.BeforeHeight,
+		PeerHeight:       result.PeerHeight,
+		AfterHeight:      result.AfterHeight,
+		HeadHash:         result.HeadHash,
+		BlocksDownloaded: result.BlocksDownloaded,
+		Synced:           result.Synced,
+		Errors:           result.Errors,
 	})
 }
 
