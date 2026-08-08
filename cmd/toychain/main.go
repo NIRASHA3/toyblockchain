@@ -19,6 +19,11 @@ import (
 
 var errValidationFailed = errors.New("chain validation failed")
 
+const (
+	recipientWalletAddressHelp = "recipient wallet address"
+	transactionMemoHelp        = "transaction memo"
+)
+
 type cliConfig struct {
 	dataPath         string
 	difficulty       int
@@ -104,6 +109,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return cmdMerkleProof(commandArgs, cfg, bcfg, stdout, stderr)
 	case "serve":
 		return cmdServe(commandArgs, cfg, bcfg, stdout, stderr)
+	case "node":
+		return cmdNode(commandArgs, cfg, bcfg, stdout, stderr)
 	case "resolve-fork":
 		return cmdResolveFork(commandArgs, cfg, bcfg, stdout, stderr)
 	case "tamper":
@@ -187,9 +194,9 @@ func cmdInit(args []string, cfg cliConfig, _ blockchain.Config, stdout, stderr i
 func cmdFaucet(args []string, cfg cliConfig, bcfg blockchain.Config, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("faucet", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	to := fs.String("to", "", "recipient wallet address")
+	to := fs.String("to", "", recipientWalletAddressHelp)
 	amount := fs.Int64("amount", 0, "amount to mint")
-	memo := fs.String("memo", "faucet funding", "transaction memo")
+	memo := fs.String("memo", "faucet funding", transactionMemoHelp)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -216,9 +223,9 @@ func cmdTransfer(args []string, cfg cliConfig, bcfg blockchain.Config, stdout, s
 	fs.SetOutput(stderr)
 	walletPath := fs.String("wallet", "", "encrypted sender wallet file")
 	passphrase := fs.String("passphrase", "", "wallet passphrase")
-	to := fs.String("to", "", "recipient wallet address")
+	to := fs.String("to", "", recipientWalletAddressHelp)
 	amount := fs.Int64("amount", 0, "amount to send")
-	memo := fs.String("memo", "", "transaction memo")
+	memo := fs.String("memo", "", transactionMemoHelp)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -245,9 +252,9 @@ func cmdSignTransaction(args []string, cfg cliConfig, bcfg blockchain.Config, st
 	fs.SetOutput(stderr)
 	walletPath := fs.String("wallet", "", "encrypted sender wallet file")
 	passphrase := fs.String("passphrase", "", "wallet passphrase")
-	to := fs.String("to", "", "recipient wallet address")
+	to := fs.String("to", "", recipientWalletAddressHelp)
 	amount := fs.Int64("amount", 0, "amount to send")
-	memo := fs.String("memo", "", "transaction memo")
+	memo := fs.String("memo", "", transactionMemoHelp)
 	outPath := fs.String("out", "", "output signed transaction JSON file; omit or use - for stdout")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -586,6 +593,7 @@ Commands:
   merkle-proof -height N -tx I                print a transaction Merkle proof
   serve [-addr 127.0.0.1:8080] [-api-token TOKEN]
                                              start REST API server
+  node -addr 127.0.0.1:8081 -peers URLS       start networked node HTTP service
   resolve-fork -candidate FILE [-dry-run]     compare with a competing state and adopt it if longer and valid
   tamper -height N -tx I -amount N            deliberately alter stored data for demo`))
 }

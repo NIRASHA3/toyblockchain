@@ -1,405 +1,289 @@
-# Research Report: Toy Blockchain and Ledger Simulator
-
+﻿# Research Report: Toy Blockchain and Ledger Simulator
 ## 1. Project scope and problem analysis
-
-This project implements a local command-line blockchain and ledger simulator in pure Go. The goal is to demonstrate the internal behaviour of a small blockchain, including deterministic block hashing, proof-of-work mining, ledger replay, tamper detection, JSON persistence, transaction validation, wallet-based signatures, Merkle-root-based transaction commitment, difficulty retargeting, local longest-valid-chain fork resolution, and REST API access with signed transaction submission.
-
-The latest improvement adds fork resolution. The node can compare its local state file with a competing state, validate both chains, and adopt the candidate only when it is valid and strictly longer. The API can also accept a competing state through a protected write endpoint. Therefore, the optional extension list is now covered: digital signatures, Merkle roots, concurrent mining, difficulty retargeting, and fork resolution.
-
-## 2. Architecture
-
-The project is organised as a small Go module:
-
-- `cmd/toychain`: command-line interface, HTTP API, signed transaction export, and output formatting.
-- `internal/blockchain`: domain logic for blocks, transactions, wallets, Merkle roots, mining, validation, balances, fork resolution, and persistence.
-
-The main types are:
-
-- `Wallet`: Ed25519 key pair and derived address.
+This project implements a local command-line blockchain and ledger simulator in pure Go. The system demonstrates how blockchain data structures, proof-of-work mining, signed transactions, Merkle-root-based transaction commitment, ledger replay, tamper detection, difficulty retargeting, HTTP APIs, peer communication, gossip propagation, chain synchronisation, and fork resolution work together inside a small blockchain network.
+The implementation runs without third-party blockchain frameworks. Each node stores its own JSON state file and exposes an HTTP interface. In networked mode, multiple local node processes are started on different ports and connected through configured peer URLs. This allows transactions and blocks to propagate between nodes, allows lagging nodes to synchronise from peers, and allows nodes to resolve forks by adopting a longer valid chain.
+The main problem addressed by this project is how a blockchain node can maintain a consistent local view of the ledger while receiving transactions, mined blocks, and competing chain data from other nodes. The implementation focuses on correctness and observability rather than production-level scalability. Each critical state transition is validated by replaying the chain and checking block structure, proof-of-work, Merkle roots, digital signatures, sender nonces, duplicate transaction IDs, and account balances.
+## 2. Research background
+### 2.1 Proof-of-work and longest-chain reasoning
+Nakamoto's Bitcoin design introduced a peer-to-peer electronic cash system based on proof-of-work, block linking, and a longest proof-of-work chain rule. The key security idea is that rewriting past history requires redoing the proof-of-work for the changed block and then catching up with the honest network. This project follows the same educational principle in simplified form: a block is accepted only if its hash satisfies the configured proof-of-work target, and a competing chain is adopted only if it is valid and longer than the local chain.
+The simulator uses block count as its fork-choice metric rather than cumulative work. This is simpler for demonstration and easier to test, but it is less accurate than a production proof-of-work system where the chain with the most accumulated work is normally preferred.
+### 2.2 Gossip propagation and temporary forks
+Blockchain networks rely on propagation of transactions and blocks between peers. Research on Bitcoin propagation shows that network delay can cause nodes to temporarily observe different heads. When two valid blocks are mined close together, different peers may accept different blocks first, causing a temporary fork. A fork-choice rule is then required so nodes can eventually converge when one branch becomes preferable.
+This simulator reproduces the same concept locally. A node broadcasts valid transactions and mined blocks to configured peers. If a peer receives a block that directly extends its current head, it validates and appends it. If the block does not extend the local head, the peer treats it as fork evidence and can download the peer chain for fork resolution.
+### 2.3 Blockchain challenges and opportunities
+Blockchain systems combine cryptography, consensus, distributed systems, and application design. Survey literature identifies important challenges such as consensus design, scalability, privacy, and security. This simulator intentionally focuses on a small subset of those problems: transaction authenticity, tamper-evident block structure, local peer communication, chain synchronisation, and fork handling. It does not attempt to implement public blockchain economics, smart contracts, validator incentives, or a production peer-discovery protocol.
+### 2.4 Race-free implementation in Go
+The networked node handles concurrent HTTP requests, mining, gossip, synchronisation, and fork resolution. These operations can access shared state such as the chain, pending transaction pool, peer list, and deduplication maps. Go's race detector is designed to detect data races during runtime testing by using the `-race` flag. This project therefore uses a mutex-protected node wrapper and verifies the implementation with:
+```powershell
+go test -race ./...
+```
+Passing the race detector does not prove every possible concurrent execution is safe, but it provides strong practical evidence that the tested paths do not contain runtime data races.
+## 3. Architecture
+The project is organised into three main areas:
+```text
+cmd/toychain
+internal/blockchain
+internal/node
+```
+The `cmd/toychain` package contains the command-line interface, the single-node REST API, and the networked node command. It parses global flags such as `-data`, `-difficulty`, `-retarget-interval`, and `-target-block-time`, then calls the appropriate blockchain or node operation.
+The `internal/blockchain` package contains the core blockchain domain logic. It defines blocks, transactions, wallets, Merkle roots, proof-of-work mining, validation, ledger replay, state persistence, difficulty retargeting, and local fork resolution.
+The `internal/node` package adds the networked node layer. It wraps the blockchain state with concurrency protection and exposes HTTP endpoints for status inspection, transaction gossip, block gossip, chain synchronisation, and network fork resolution.
+The `scripts` folder contains PowerShell scripts for starting and stopping a three-node local cluster.
+## 4. Main data types
+The main blockchain types are:
+- `Wallet`: Ed25519 public/private key pair and derived address.
 - `Transaction`: sender, recipient, amount, creation time, memo, nonce, public key, signature, and deterministic ID.
-- `Block`: height, Unix timestamp, stored difficulty, transaction list, Merkle root, previous block hash, nonce, and own hash.
+- `Block`: height, timestamp, difficulty, transaction list, Merkle root, previous hash, nonce, and block hash.
 - `State`: confirmed chain plus pending transaction pool.
 - `LedgerState`: replayed balances, sender nonces, and seen transaction IDs.
-- `MerkleProofStep`: one sibling hash and its left/right position in a Merkle proof path.
-- `apiServer`: local HTTP server for chain exploration, signed transaction submission, faucet funding, mining, fork resolution endpoints, and optional token protection for writes.
-- `ForkResolutionResult`: outcome of comparing a local chain with a competing candidate chain.
-
-## 3. Hashing scheme
-
-A block hash is computed using SHA-256 over a canonical block-header byte payload. The block's own `Hash` field is excluded. The field order is:
-
+- `MerkleProofStep`: sibling hash and left/right position used for Merkle proof verification.
+- `ForkResolutionResult`: result of comparing a local state with a competing candidate state.
+The main networked node types are:
+- `Node`: concurrency-safe wrapper around local blockchain state.
+- `Status`: current height, head hash, pending transaction count, and peer count.
+- `TransactionGossipResult`: transaction acceptance and gossip forwarding result.
+- `BlockGossipResult`: block acceptance, forwarding, and optional reorganisation result.
+- `SyncResult`: result of downloading missing blocks from a peer.
+- `ReorgResult`: result of downloading and resolving a competing peer chain.
+## 5. Hashing and Merkle-root design
+A block hash is computed using SHA-256 over a canonical block-header payload. The block's own `Hash` field is excluded from the hash calculation. The field order is:
 1. block height,
 2. Unix timestamp,
 3. difficulty,
 4. previous block hash,
 5. Merkle root,
 6. nonce.
-
-The transaction list is no longer directly serialised into the block hash payload. Instead, every transaction is hashed into a Merkle leaf. Each leaf commits to the transaction ID, sender, recipient, amount, creation timestamp, memo, transaction nonce, public key, and signature. Leaf hashes are paired and hashed upward until one Merkle root remains. If a level has an odd number of hashes, the final hash is duplicated for that level.
-
-The transaction ID is also deterministic. It is computed from the transaction signing payload plus the signature. The signing payload excludes the transaction ID and signature, preventing circular hashing.
-
-Merkle proof generation starts at a selected transaction leaf and records the sibling hash at every tree level. During verification, the transaction hash is combined with each sibling according to its left/right position until a root is reconstructed. The reconstructed root must equal the block's stored Merkle root.
-
-## 4. Wallets and digital signatures
-
-Wallets use Ed25519 keys from the Go standard library. The wallet address is derived by hashing the public key and taking a short address prefix. A transfer transaction includes the sender address, recipient address, amount, nonce, sender public key, and signature.
-
+The transaction list is committed through the Merkle root. Each transaction is first hashed into a Merkle leaf. The leaf commits to the transaction ID, sender, recipient, amount, timestamp, memo, nonce, public key, and signature. Leaves are then paired and hashed upward until one Merkle root remains. If a tree level has an odd number of hashes, the final hash is duplicated for that level.
+This design improves the earlier direct-transaction hashing approach because the block header stores a compact transaction commitment. If any transaction field is changed, the recomputed transaction hash changes, the recomputed Merkle root changes, and validation fails.
+## 6. Wallets and signed transactions
+Wallets use Ed25519 keys from the Go standard library. The wallet address is derived from the public key. A normal transfer transaction includes the sender address, recipient address, amount, nonce, sender public key, and signature.
 During validation, the system checks that:
-
 - the sender address matches the public key,
 - the signature verifies against the transaction signing payload,
 - the transaction ID matches the transaction contents,
-- the sender nonce is the next expected nonce,
-- the transaction ID has not already appeared in the chain,
+- the sender nonce is the expected next nonce,
+- the transaction ID has not already appeared,
 - the sender has enough balance.
-
-This improves security because a user can no longer spend from an address just by typing the address string. The transaction must be authorised by the matching private key.
-
-## 5. Encrypted wallet storage
-
-Wallet private keys are encrypted before being written to disk. The implementation uses AES-256-GCM from the Go standard library. AES-GCM provides authenticated encryption, so an incorrect passphrase or modified ciphertext is rejected during wallet loading.
-
-Because the project keeps to the standard library, the passphrase-derived encryption key is created using an iterative SHA-256 process with a random salt. This is acceptable for an educational pure-Go exercise, but a production wallet should use a memory-hard KDF such as Argon2id or scrypt.
-
-## 6. Validation strategy
-
-Validation scans the chain from block 0 to the tip and fails fast on the first offending block. It checks:
-
-- height equals the block's position in the slice,
-- recomputed Merkle root equals the stored Merkle root,
-- recomputed block hash equals the stored block hash,
-- hash satisfies the block's stored proof-of-work difficulty,
-- each block difficulty matches the expected retargeting rule,
-- genesis block matches the fixed canonical genesis block,
-- every later block points to the previous block's stored hash,
+This prevents a user from spending from an address simply by typing the address string. The user must prove ownership of the corresponding private key.
+Wallet private keys are encrypted before being written to disk. The implementation uses AES-256-GCM for authenticated encryption. Because the project stays within the Go standard library, the passphrase-derived key is created using an iterative SHA-256 process with a random salt. This is acceptable for an educational exercise, but production wallets should use a memory-hard KDF such as Argon2id or scrypt.
+## 7. Validation strategy
+Validation scans the chain from genesis to the current head and fails on the first invalid block or transaction. It checks:
+- chain is not empty,
+- genesis block matches the canonical genesis block,
+- block height equals its position,
+- previous-hash links are correct,
 - timestamps do not move backwards,
-- every transaction is syntactically valid,
-- every transaction ID matches its fields,
-- every non-faucet transaction has a valid signature,
-- every sender nonce is in the correct sequence,
+- stored Merkle root matches the recomputed Merkle root,
+- stored block hash matches the recomputed block hash,
+- hash satisfies the stored proof-of-work difficulty,
+- block difficulty matches the retargeting rule,
+- transaction syntax is valid,
+- transaction IDs match transaction fields,
+- non-faucet transactions contain valid signatures,
+- sender nonces are sequential,
 - duplicate transaction IDs are rejected,
-- every non-faucet transaction has sufficient sender balance,
-- balance overflow is prevented before mutating balances.
-- Merkle proofs can be generated and locally verified for selected transactions.
-
-Because validation recomputes the Merkle root and replays the ledger, it detects both structural tampering and business-rule violations.
-
-## 7. REST API design
-
-The project includes a local HTTP server using the Go standard library `net/http` package. The server binds to `127.0.0.1:8080` by default so the API is limited to the local machine unless another address is explicitly provided. It can be started with:
-
-```bash
-./toychain -data demo.json -difficulty 3 serve
+- non-faucet transactions have sufficient balance,
+- balance overflow is prevented.
+This means the JSON state file is never blindly trusted. Even if a user manually edits a saved block or transaction, validation recomputes the data and rejects inconsistent state.
+## 8. Mining, goroutines, and difficulty retargeting
+Mining searches for a nonce that produces a block hash with the required number of leading zero hexadecimal digits. For example, difficulty `3` requires a hash beginning with `000`.
+The implementation supports concurrent mining using goroutines. Each worker searches a different nonce sequence. When one worker finds a valid nonce, it sends the result through a channel and the remaining workers are cancelled through a context.
+Difficulty retargeting allows the chain to adjust mining difficulty after a configured interval. The node compares recent mining time against the target block time and adjusts difficulty by at most one level. Validation recalculates the expected difficulty for every block and rejects blocks whose stored difficulty does not match the rule. During local multi-node demonstrations, retargeting is often disabled with:
+```powershell
+-retarget-interval 0
 ```
-
-Optional token protection can be enabled for write endpoints:
-
-```bash
-./toychain -data demo.json -difficulty 3 serve -addr 127.0.0.1:8080 -api-token dev-secret
+This keeps manual experiments predictable.
+## 9. REST API design
+The project provides two HTTP modes.
+The `serve` command starts the single-node REST API. It supports local chain inspection, faucet funding, signed transaction submission, mining, Merkle proofs, validation, and local fork resolution. Write endpoints can be protected with an optional `X-API-Token` header.
+The `node` command starts a networked node. It exposes introspection endpoints and peer endpoints used for gossip, synchronisation, and reorganisation.
+The API intentionally does not receive wallet file paths, private keys, or wallet passphrases. Transactions are signed locally with the CLI command:
+```powershell
+.\toychain.exe tx-sign -wallet alice.wallet.json -passphrase alice-pass -to ADDRESS -amount 25 -out tx.json
 ```
-
-The read endpoints are:
-
-- `GET /health`,
-- `GET /chain`,
-- `GET /blocks`,
-- `GET /blocks/{height}`,
-- `GET /balances`,
-- `GET /transactions/{id}`,
-- `GET /merkle-proof?height=2&tx=0`,
-- `GET /validate`.
-
-The write endpoints are:
-
-- `POST /faucet`,
-- `POST /transactions`,
-- `POST /mine`,
-- `POST /resolve-fork`.
-
-Normal endpoints load the JSON state and validate the chain before returning or changing data. This prevents the API from presenting or mutating hand-edited invalid chain data as if it were valid. The `/validate` endpoint is slightly different because it must be able to report invalid chains instead of refusing to load them silently.
-
-The API intentionally does not receive wallet file paths, private keys, or wallet passphrases. The `tx-sign` CLI command signs a transaction locally and writes a signed transaction JSON file. The API can then receive that signed transaction through `POST /transactions`. This is closer to a standard blockchain node model: the client owns the private key and signs locally, while the node verifies the signature, transaction ID, nonce, duplicate transaction ID, sender balance, and chain validity.
-
-For fork resolution, `POST /resolve-fork` accepts a complete competing state JSON body. The endpoint is a protected write endpoint when `-api-token` is configured. The candidate chain is validated before any local state is replaced.
-
-When an API token is configured, the state-changing endpoints `POST /faucet`, `POST /transactions`, `POST /mine`, and `POST /resolve-fork` require the `X-API-Token` request header. Read endpoints remain available without the token. This keeps the local chain easy to inspect while reducing the risk of accidental unauthenticated writes. The token comparison uses constant-time comparison from the Go standard library to avoid simple timing differences.
-
-`POST /faucet` is kept as a learning endpoint because this toy chain has no mining reward or transaction fee model. `POST /mine` mines the current pending pool into a block using the configured proof-of-work difficulty.
-
-## 8. Go feature choices
-
-### Interfaces
-
-The core domain package avoids unnecessary interfaces. Concrete types are clearer for this small program. The CLI accepts `io.Writer` values in `run`, making CLI tests possible without a fake framework.
-
-### Goroutines and channels
-
-Mining is the naturally concurrent part of the program. The nonce space is split among workers. A buffered result channel returns the first valid block, and context cancellation stops the remaining workers.
-
-### Context
-
-`context.Context` is used in mining to support cancellation and CLI timeouts. When one worker finds a valid nonce, the context is cancelled and the remaining workers stop cleanly.
-
-### Error handling
-
-Errors are returned rather than printed in the domain package. Lower-level errors are wrapped with `%w`, and chain validation returns a custom `ValidationError` containing the block height and failed check.
-
-## 9. Experiment 1: tamper-evidence
-
-### Setup
-
-Commands used:
-
-```bash
-./toychain -data tamper.json -difficulty 3 init -force
-./toychain -data tamper.json -difficulty 3 faucet -to ALICE_ADDRESS -amount 100
-./toychain -data tamper.json -difficulty 3 mine
-./toychain -data tamper.json -difficulty 3 validate
-./toychain -data tamper.json tamper -height 1 -tx 0 -amount 999
-./toychain -data tamper.json -difficulty 3 validate
+The signed JSON transaction can then be submitted to a node. This keeps private-key handling on the client side and makes the node responsible only for verification.
+## 10. Networked node design
+Each networked node runs as an independent process with its own JSON state file. A node is started with an address and peer list:
+```powershell
+.\toychain.exe -data node1.json -difficulty 1 -retarget-interval 0 node -addr 127.0.0.1:8081 -peers http://127.0.0.1:8082,http://127.0.0.1:8083
 ```
-
-### Observed output
-
-Before tampering:
-
+The node layer protects shared state with a mutex. Protected state includes:
+- chain and pending pool,
+- peer list,
+- seen transaction IDs,
+- seen block hashes,
+- local self URL.
+The HTTP handlers call methods on the `Node` type rather than directly mutating blockchain state. This keeps chain updates, pending-pool updates, gossip deduplication, synchronisation, and reorganisation safe under concurrent requests.
+## 11. Network API and wire format
+The network API includes read endpoints and peer endpoints.
+Important read and control endpoints:
 ```text
-mined block height=1 difficulty=3 hash=000... nonce=... attempts=... duration=... workers=...
-VALID: 2 blocks checked
+GET  /health
+GET  /status
+GET  /peers
+GET  /chain
+GET  /blocks
+GET  /blocks/{height}
+GET  /pending
+GET  /balances
+GET  /validate
+POST /transactions
+POST /mine
+POST /sync
+POST /resolve-fork
 ```
-
-After tampering:
-
+Peer endpoints:
 ```text
-tampered block=1 tx=0 amount 100 -> 999; run validate to see detection
-INVALID: block 1 failed merkle root check: stored merkle root does not match recomputed root
+POST /peer/transactions
+POST /peer/blocks
+GET  /peer/status
+GET  /peer/blocks/{height}
 ```
-
-### Explanation
-
-The transaction amount is part of the transaction hash leaf. Changing the amount changes the transaction hash, which changes the recomputed Merkle root. The stored Merkle root remains the old value, so validation fails at the Merkle root check before the block hash check.
-
-## 10. Experiment 2: difficulty versus effort
-
-The proof-of-work target is a required number of leading zero hexadecimal digits. One hexadecimal digit has 16 possible values, so adding one required leading zero multiplies the expected search space by about 16. Individual runs can vary because hashing is probabilistic.
-
-Example single-worker mining trend:
-
-| Difficulty | Expected trend |
-|---:|---|
-| 1 | Usually very fast |
-| 2 | More attempts than difficulty 1 |
-| 3 | Noticeably more attempts |
-| 4 | Can vary but average effort is much higher |
-| 5 | Highest supported difficulty for this simulator |
-
-The trend is not linear in the difficulty number. The expected work grows exponentially because each extra zero hex digit adds another 1-in-16 condition.
-
-
-## 11. Difficulty retargeting
-
-The simulator supports difficulty retargeting. Each block stores its own difficulty, and mining chooses the next block difficulty from the previous chain state. The first non-genesis block uses the configured starting difficulty. Later blocks normally carry forward the previous block difficulty. After a completed retarget interval, the node compares the recent mining time against the configured target block time.
-
-The default settings are:
-
-```text
-retarget interval: 5 blocks
-target block time: 10 seconds
-minimum difficulty: 1
-maximum difficulty: 5
-```
-
-The adjustment is intentionally conservative for an educational project. The difficulty changes by at most one level per retarget interval. If the previous interval was much faster than expected, the next difficulty increases by one. If it was much slower than expected, the next difficulty decreases by one. Otherwise, the difficulty remains unchanged.
-
-This improves the simulator because proof-of-work no longer depends only on a fixed command-line value. The chain can adapt its mining difficulty while still keeping validation deterministic. During validation, the verifier recalculates the expected difficulty for each block from the previous chain state and rejects blocks whose stored difficulty does not match the retarget rule.
-
-## 12. Experiment 3: Merkle proof generation
-
-### Setup
-
-Commands used after creating a chain with at least one transaction in block 2:
-
-```bash
-./toychain -data demo.json -difficulty 3 merkle-proof -height 2 -tx 0
-```
-
-### Observed output
-
-The command prints JSON similar to:
-
+Transaction gossip uses a JSON request containing:
 ```json
 {
-  "block_height": 2,
-  "transaction_index": 0,
-  "transaction_id": "...",
-  "transaction_hash": "...",
-  "merkle_root": "...",
-  "proof": [
-    {
-      "position": "right",
-      "hash": "..."
-    }
-  ],
-  "valid": true
+  "origin": "http://127.0.0.1:8081",
+  "transaction": {}
 }
 ```
-
-### Explanation
-
-The proof contains only the sibling hashes needed to reconstruct the Merkle root for the selected transaction. If the transaction hash, proof path, or Merkle root is changed, verification returns false. This demonstrates how block membership can be checked without re-hashing every transaction in the block.
-
-## 13. Experiment 4: REST API read and write workflow
-
-### Setup
-
-After creating wallets and initialising a demo chain, the API server was started:
-
-```bash
-./toychain -data demo.json -difficulty 3 serve -addr 127.0.0.1:8080 -api-token dev-secret
+Block gossip uses:
+```json
+{
+  "origin": "http://127.0.0.1:8081",
+  "block": {}
+}
 ```
-
-Example read API checks:
-
-```bash
-curl http://127.0.0.1:8080/health
-curl http://127.0.0.1:8080/blocks/2
-curl http://127.0.0.1:8080/balances
-curl "http://127.0.0.1:8080/merkle-proof?height=2&tx=0"
-curl http://127.0.0.1:8080/validate
+The `origin` field helps a receiving node avoid immediately forwarding the same item back to the peer it came from.
+## 12. Transaction gossip
+When a signed transaction is submitted to `/transactions`, the node validates the transaction and checks whether the transaction ID has already been seen. If it is new and valid, the transaction is added to the pending pool and forwarded to peers through `/peer/transactions`.
+The experiment showed that submitting one signed transaction to node 1 resulted in:
+```text
+accepted = True
+gossiped = 2
 ```
-
-Example signed transaction flow:
-
-```bash
-./toychain -data demo.json -difficulty 3 tx-sign -wallet alice.wallet.json -passphrase alice-pass -to BOB_ADDRESS -amount 40 -out signed_tx.json
-curl -X POST http://127.0.0.1:8080/transactions -H "Content-Type: application/json" -H "X-API-Token: dev-secret" --data @signed_tx.json
-curl -X POST http://127.0.0.1:8080/mine -H "Content-Type: application/json" -H "X-API-Token: dev-secret" --data '{}'
+This means node 1 accepted the transaction and forwarded it to two peers in the three-node cluster. Checking the pending pool on all three nodes showed that the transaction was present on every node.
+Submitting the same transaction again produced:
+```text
+accepted = False
+gossiped = 0
 ```
-
-### Expected result
-
-The server returns JSON responses. `/validate` returns `valid: true` for a correct chain, `/blocks/{height}` returns block details including the Merkle root, `/balances` returns replayed balances, `/merkle-proof` returns a proof with `valid: true`, `POST /transactions` accepts valid signed transactions into the pending pool, and `POST /mine` creates a new block from pending transactions.
-
-### Explanation
-
-This demonstrates how the CLI blockchain can be exposed through a backend-style interface while preserving safer wallet handling. The API accepts signed transaction data, but wallet decryption and signing remain local to the client. If a submitted transaction is unsigned, has a mismatched ID, has an invalid signature, uses the wrong nonce, duplicates an existing transaction ID, or overspends, the API rejects it with a structured JSON error.
-
-## 14. Discussion
-
-### Why previous-hash links make old tampering impractical in real chains
-
-In this local toy, a user can edit the JSON file and, with enough time, recompute the Merkle root and re-mine the changed block and every following block. In a real chain, old tampering is impractical because the attacker must redo the proof-of-work for the modified block and then catch up with and overtake the honest network's continuing work.
-
-### Alternative to proof-of-work
-
-One alternative is proof-of-stake. Instead of expending hashing work, validators lock economic value and can be penalised if they behave dishonestly. One advantage is lower energy use because validators do not compete by brute-force hashing. One drawback is extra protocol complexity because validator selection, slashing, and finality rules must be designed carefully.
-
-Another simple private-network alternative is proof-of-authority, where known authorised validators may create blocks. Its advantage is simplicity and speed for trusted organisations. Its drawback is centralisation.
-
-### Three ways this toy differs from production blockchains
-
-1. **No distributed consensus.** This program demonstrates fork choice locally, but it does not run a real distributed consensus protocol.
-2. **No peer-to-peer network.** Transactions and blocks are not automatically propagated between nodes.
-3. **Simple fork choice.** Fork resolution uses a longest-valid-chain rule based on block count, not cumulative work, network votes, finality checkpoints, or economic stake.
-
-The project now includes Merkle roots, Merkle proofs, difficulty retargeting, and local fork resolution, but it still stores the full transactions inside each local block file.
-
-## 15. Experiment 5: REST API security controls
-
-### Setup
-
-The server can be started in protected mode:
-
-```bash
-./toychain -data demo.json -difficulty 3 serve -addr 127.0.0.1:8080 -api-token dev-secret
+This demonstrates deduplication. The node recognised the transaction ID as already seen and did not forward it again, preventing gossip loops.
+## 13. Block gossip
+When a node mines through `/mine`, it selects pending transactions, mines a valid proof-of-work block, appends the block locally, removes confirmed transactions from pending, and broadcasts the block to peers through `/peer/blocks`.
+A receiving peer validates the block before appending it. The block is accepted only if it is valid and directly extends the local head. After mining on node 1, the experiment showed that all three nodes reached the same height and the same head hash, and pending transaction counts returned to zero. This demonstrates successful block propagation and mempool consistency after confirmation.
+## 14. Chain synchronisation
+Chain synchronisation supports new or lagging nodes. A node can call `/sync` with a peer URL:
+```powershell
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8084/sync -Body '{"peer":"http://127.0.0.1:8081"}' -ContentType "application/json"
 ```
-
-A read endpoint can still be called without a token:
-
-```bash
-curl http://127.0.0.1:8080/health
+The syncing node first reads the peer status, compares heights, and downloads missing blocks one by one using `/peer/blocks/{height}`. Each downloaded block is validated before being appended.
+The experiment used a new node with only the genesis block. After calling `/sync`, the node downloaded the missing blocks and reached the same height and head hash as the peer. This confirms that a lagging node can catch up without directly copying a state file.
+## 15. Fork resolution and reorganisation
+Fork resolution handles competing chains. If a node receives a peer block that does not extend its current head, the block may represent a competing branch. The node can download the peer chain and run fork resolution.
+Manual fork resolution is triggered with:
+```powershell
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8091/resolve-fork -Body '{"peer":"http://127.0.0.1:8092"}' -ContentType "application/json"
 ```
-
-A write endpoint without a token is rejected:
-
-```bash
-curl -X POST http://127.0.0.1:8080/mine -d '{}' -H 'Content-Type: application/json'
+The node adopts the candidate only when:
+- the candidate chain is valid,
+- the candidate chain is longer than the local chain.
+During reorganisation, transactions confirmed in replaced local blocks but absent from the adopted chain are treated as orphaned transactions. The node revalidates those orphaned transactions on top of the adopted chain. Valid orphaned transactions return to the pending pool, while invalid or conflicting transactions are dropped.
+The fork experiment created two branches from a common funded chain. Node A had height `2`, while node B had height `3`. Before resolution, the nodes had different head hashes. After node A resolved against node B, the response showed:
+```text
+decision = adopt_candidate
+adopted = True
+local_height = 2
+candidate_height = 3
+after_height = 3
+kept_pending = 1
+dropped_pending = 0
 ```
-
-The same write endpoint succeeds only when the correct token is supplied:
-
-```bash
-curl -X POST http://127.0.0.1:8080/mine \
-  -H 'Content-Type: application/json' \
-  -H 'X-API-Token: dev-secret' \
-  -d '{}'
+After reorganisation, node A and node B had the same height and head hash. Node A also had one pending transaction, showing that the transaction from the replaced local branch was correctly returned to the pending pool.
+## 16. Local cluster launcher
+The local cluster launcher starts three connected node processes for demonstration:
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\start-cluster.ps1 -Reset
 ```
-
-### Explanation
-
-The security controls are intentionally simple and local. Binding to localhost by default prevents accidental exposure on the local network. Optional token protection separates read-only inspection from state-changing operations. This is not full production security, but it is a useful enterprise-style hardening step for a local educational node.
-
-## 16. Experiment 6: Fork resolution
-
-### Setup
-
-The local node can compare its own state file with another state file that represents a competing chain:
-
-```bash
-./toychain -data local.json -difficulty 3 resolve-fork -candidate candidate.json -dry-run
-./toychain -data local.json -difficulty 3 resolve-fork -candidate candidate.json
+It builds the CLI, prepares node state files, starts each node in its own PowerShell window, writes process IDs to `.cluster/pids.json`, and performs a quick health check.
+The expected health output is:
+```text
+Node 1: health=ok, height=0, pending=0, peers=2
+Node 2: health=ok, height=0, pending=0, peers=2
+Node 3: health=ok, height=0, pending=0, peers=2
 ```
-
-The same behaviour is available through the REST API:
-
-```bash
-curl -X POST http://127.0.0.1:8080/resolve-fork \
-  -H 'Content-Type: application/json' \
-  -H 'X-API-Token: dev-secret' \
-  --data @candidate.json
+The stop script terminates the recorded node processes:
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\stop-cluster.ps1 -Clean
 ```
-
-### Expected result
-
-The candidate is adopted only when it is valid and has a greater confirmed block height than the local chain. If the candidate is invalid, the local state is not changed. If the candidate is equal length or shorter, the local chain is kept.
-
-When a longer valid candidate is adopted, local pending transactions are replayed on top of the adopted chain. Pending transactions that remain valid are kept, and conflicting pending transactions are dropped. Candidate pending transactions are not imported because fork choice applies to confirmed blocks rather than to another node's mempool.
-
-### Explanation
-
-This implements a longest-valid-chain rule in a local educational form. It is not a full distributed consensus protocol, but it demonstrates the key idea that a node should not blindly accept another chain. The candidate must pass complete validation first, including canonical genesis, hashes, proof-of-work, Merkle roots, signatures, nonces, balances, duplicate transaction checks, and difficulty retargeting rules.
-
-## 17. Constraints and future improvements
-
-This implementation is suitable for a local CLI blockchain learning project. It is not production money software.
-
+This provides a repeatable local test environment for transaction gossip, block gossip, synchronisation, and fork resolution.
+## 17. Experimental verification
+The final implementation was verified using:
+```powershell
+go test ./...
+go test -race ./...
+go vet ./...
+go build -o toychain.exe ./cmd/toychain
+```
+The tests passed for:
+- command-line behaviour,
+- blockchain validation,
+- wallet and signature rules,
+- Merkle root checks,
+- mining and retargeting,
+- local fork resolution,
+- networked node state wrapper,
+- transaction gossip,
+- block gossip,
+- chain synchronisation,
+- fork reorganisation,
+- race detector execution.
+The race detector result is important because the networked node can receive concurrent HTTP requests while also mining, gossiping, syncing, or reorganising. The mutex-protected `Node` wrapper is therefore a necessary design choice rather than an optional improvement.
+## 18. Discussion
+### 18.1 Finality
+The simulator uses a simplified longest-valid-chain rule. This means finality is probabilistic rather than absolute. A transaction confirmed in a block can still be reorganised out if a longer valid competing chain appears. In practice, blockchain users wait for additional confirmations because each new block on top of a transaction makes replacement less likely.
+### 18.2 51% attack discussion
+In a proof-of-work network, an attacker with majority mining power can attempt to create a longer alternative chain. This can allow double-spending or reversal of recent transactions. This simulator does not model real mining economics or network-wide hash power, but its fork experiment demonstrates the structural idea: if a longer valid chain is presented, the node may adopt it and move transactions from the replaced branch back into pending.
+### 18.3 Malicious peer behaviour
+Digital signatures prevent a peer from forging transfers from another user's wallet. Merkle roots and block hashes prevent silent transaction tampering. Full-chain validation prevents a node from adopting a structurally invalid chain. However, malicious peers could still attempt denial-of-service behaviour by sending repeated invalid blocks, large requests, stale blocks, or conflicting data. Production systems would need peer scoring, rate limiting, banning, stronger authentication, and more careful resource controls.
+### 18.4 Longest chain versus cumulative work
+The simulator adopts a longer valid chain by block height. This is simple and understandable, but it is not the strongest production rule. A more accurate proof-of-work fork-choice rule would compare cumulative work so that a shorter chain with higher difficulty could potentially outweigh a longer low-difficulty chain. This is a future improvement.
+## 19. Constraints and future improvements
+This implementation is suitable for local blockchain learning and assessment demonstrations. It is not production cryptocurrency software.
 Current constraints:
-
-- no peer-to-peer network,
-- no distributed consensus beyond local longest-valid-chain comparison,
+- peer networking is local HTTP-based and intended for localhost testing,
+- peers are configured manually,
+- no automatic peer discovery,
+- no NAT traversal,
+- no public network deployment,
 - fork choice is based on block count rather than cumulative work,
 - no transaction fees,
+- no mining rewards,
 - no smart contracts,
-- passphrases are supplied through CLI flags,
-- the standard-library-only wallet KDF is educational and weaker than Argon2id or scrypt.
-
+- no gas model,
+- no persistent peer database,
+- no automatic background sync loop,
+- no advanced malicious-peer defence.
 Future improvements:
-
-1. Use interactive hidden passphrase input.
-2. Replace the educational KDF with Argon2id or scrypt.
-3. Add HTTPS support, stronger authentication, rate limiting, and role-based API access.
-4. Add peer-to-peer node communication with peer discovery and network-based chain exchange.
-5. Add cumulative-work fork choice instead of simple block-count comparison.
-6. Add proof-of-authority mode for enterprise/private-chain validation.
-7. Add transaction fees or mining rewards for a more realistic incentive model.
-
+1. Add automatic peer discovery.
+2. Add periodic peer health checks.
+3. Add automatic background synchronisation.
+4. Replace block-count fork choice with cumulative-work fork choice.
+5. Add transaction fees and mining rewards.
+6. Add persistent mempool storage.
+7. Add peer banning for repeated invalid data.
+8. Add Docker Compose support for easier cluster demonstrations.
+9. Add stronger API authentication and rate limiting.
+10. Add a smart contract execution layer as a separate extension.
+## 20. Conclusion
+The project successfully demonstrates the main internal mechanisms of a blockchain node and extends them into a small local network. The blockchain core provides deterministic hashing, proof-of-work, Merkle-root validation, signed transactions, replay protection, ledger replay, tamper detection, and difficulty retargeting. The networked node layer adds transaction gossip, block gossip, chain synchronisation, fork resolution, reorganisation, orphaned transaction handling, and race-safe shared state.
+The experiments show that a transaction submitted to one node propagates to peers, duplicate transactions are not re-gossiped, mined blocks propagate and clear pending pools, lagging nodes can synchronise from peers, and a node can converge to a longer valid peer chain while returning valid orphaned transactions to pending. Overall, the simulator provides a clear and testable model of blockchain behaviour while keeping the implementation small enough to understand and verify.
 ## References
-
-- Go documentation: `crypto/ed25519` package.
-- Go documentation: `crypto/aes` and `crypto/cipher` packages.
-- Go documentation: `crypto/sha256` package.
-- Go documentation: `context` package.
-- Go documentation: `net/http` package.
-- Satoshi Nakamoto, "Bitcoin: A Peer-to-Peer Electronic Cash System".
-- Ethereum documentation: Proof-of-stake.
+- Nakamoto, S. (2008). *Bitcoin: A Peer-to-Peer Electronic Cash System*. https://bitcoin.org/bitcoin.pdf
+- Decker, C., & Wattenhofer, R. (2013). *Information Propagation in the Bitcoin Network*. IEEE P2P 2013.
+- Zheng, Z., Xie, S., Dai, H. N., Chen, X., & Wang, H. (2018). *Blockchain challenges and opportunities: A survey*. International Journal of Web and Grid Services, 14(4), 352-375.
+- The Go Programming Language. *Data Race Detector*. https://go.dev/doc/articles/race_detector
+- Go documentation: `crypto/ed25519`.
+- Go documentation: `crypto/aes` and `crypto/cipher`.
+- Go documentation: `crypto/sha256`.
+- Go documentation: `context`.
+- Go documentation: `net/http`.

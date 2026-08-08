@@ -1,606 +1,871 @@
 # Toy Blockchain and Ledger Simulator
 
-A pure-Go command-line toy blockchain and ledger simulator that demonstrates deterministic block hashing, Merkle-root-based block headers, faucet-funded transactions, wallet-based signed transfers, REST API read and write endpoints, proof-of-work mining, full-chain validation, longest-valid-chain fork resolution, tamper detection, encrypted wallet storage, JSON persistence, and automated tests.
+A pure Go toy blockchain and ledger simulator developed for coursework. The project started as a single-node proof-of-work blockchain and was extended into a small local network of independent nodes for Assignment 2.
 
-This project is intentionally local and educational. It does not connect to any external blockchain network, peer node, RPC endpoint, or third-party blockchain SDK.
+The implementation demonstrates blockchain fundamentals such as blocks, hashes, proof-of-work, signed transactions, wallet-based transfers, Merkle roots, ledger replay, REST APIs, transaction gossip, block gossip, chain synchronisation, fork resolution, and race-free shared state.
+
+---
 
 ## Features
 
-- Deterministic canonical genesis block
-- SHA-256 block hashing
-- Previous-hash block linking
-- Per-block stored difficulty
-- Difficulty retargeting based on target block time and retarget interval
-- Fork resolution using a longest-valid-chain rule
-- Merkle root stored in every block
-- Transaction hash leaves and deterministic Merkle root calculation
-- Merkle proof generation and verification
-- Faucet-funded account model
-- Encrypted Ed25519 wallet generation
-- Public-key-derived wallet addresses
-- Signed transfer transactions
-- Transaction nonce validation and replay protection
-- Duplicate transaction ID detection
+### Core Blockchain Features
+
+- Deterministic genesis block
+- Proof-of-work mining
+- Configurable mining difficulty
+- Concurrent mining using Go goroutines
+- Difficulty retargeting
+- JSON-based chain persistence
+- Chain validation by full ledger replay
+- Account-based balances
 - Pending transaction pool
-- Proof-of-work mining with configurable and auto-retargeted difficulty
-- Concurrent mining workers
-- Full-chain validation
 - Tamper detection
-- Balance calculation by replaying the chain
-- Balance overflow protection
-- JSON file persistence
-- Command-line interface
-- REST API for chain exploration, faucet funding, signed transaction submission, mining, and fork resolution
-- REST API binds to localhost by default and supports optional token protection for write endpoints
-- Unit tests for core blockchain, wallet, Merkle, fork resolution, CLI, and API behaviour
+- Fork resolution using a longer-valid-chain rule
 
-## Requirements
+### Wallet and Transaction Features
 
-- Go 1.22 or newer
+- Ed25519 wallet generation
+- Encrypted wallet storage
+- Signed transfers
+- Faucet transactions for testing
+- Transaction nonce validation
+- Replay protection
+- Duplicate transaction detection
+- Local transaction signing using `tx-sign`
 
-Check your Go version:
+### Merkle Tree Features
 
-```bash
-go version
-```
+- Merkle root stored in every block
+- Merkle root recomputation during validation
+- Merkle proof generation
+- Merkle proof verification
 
-The project uses only the Go standard library.
+### REST API Features
+
+- Local REST API for single-node operation
+- Optional API token protection for write endpoints
+- Read endpoints for blocks, balances, transactions, validation, and Merkle proofs
+
+### Networked Node Features
+
+- Multiple independent node processes
+- Local HTTP-based peer-to-peer communication
+- Configurable peer list
+- Transaction gossip with deduplication
+- Block gossip with deduplication
+- Chain synchronisation for new or lagging nodes
+- Network fork resolution and reorganisation
+- Orphaned transaction return to pending pool after reorg
+- Race-safe node state using mutex protection
+- Three-node PowerShell cluster launcher
+
+---
 
 ## Project Structure
 
 ```text
 toyblockchain/
-  cmd/
-    toychain/
-      main.go
-      server.go
-      main_test.go
-      cli_invalid_test.go
-      server_test.go
-  internal/
-    blockchain/
-      block.go
-      blockchain_test.go
-      chain_integrity_test.go
-      config.go
-      errors.go
-      fork.go
-      fork_test.go
-      invalid_transaction_test.go
-      ledger.go
-      merkle.go
-      merkle_test.go
-      mining.go
-      retarget.go
-      retarget_test.go
-      state.go
-      storage.go
-      transaction.go
-      validation.go
-      wallet.go
-      wallet_test.go
-      test_helpers_test.go
-  reports/
-    research_report.md
-  go.mod
-  README.md
+├── cmd/
+│   └── toychain/
+│       ├── main.go
+│       ├── api.go
+│       └── node_command.go
+├── internal/
+│   ├── blockchain/
+│   │   ├── block.go
+│   │   ├── config.go
+│   │   ├── fork.go
+│   │   ├── ledger.go
+│   │   ├── merkle.go
+│   │   ├── mining.go
+│   │   ├── state.go
+│   │   ├── transaction.go
+│   │   ├── validate.go
+│   │   └── wallet.go
+│   └── node/
+│       ├── api.go
+│       ├── gossip.go
+│       ├── node.go
+│       ├── reorg.go
+│       └── sync.go
+├── scripts/
+│   ├── start-cluster.ps1
+│   └── stop-cluster.ps1
+├── README.md
+└── go.mod
 ```
 
-## Build and Test
+---
 
-Run all unit tests:
+## Requirements
 
-```bash
+- Go installed
+- PowerShell for the provided cluster scripts
+- GCC/MSYS2 setup is required only when running the Go race detector on Windows
+
+For Windows race tests, use:
+
+```powershell
+$env:Path = "C:\msys64\ucrt64\bin;$env:Path"
+$env:CGO_ENABLED="1"
+```
+
+---
+
+## Build
+
+```powershell
+go build -o toychain.exe ./cmd/toychain
+```
+
+Run the program:
+
+```powershell
+.\toychain.exe help
+```
+
+---
+
+## Testing and Verification
+
+Run normal tests:
+
+```powershell
 go test ./...
 ```
 
-Run Go vet:
+Run race detector tests:
 
-```bash
+```powershell
+$env:Path = "C:\msys64\ucrt64\bin;$env:Path"
+$env:CGO_ENABLED="1"
+
+go test -race ./...
+```
+
+Run vet:
+
+```powershell
 go vet ./...
 ```
+
+Build check:
+
+```powershell
+go build -o toychain.exe ./cmd/toychain
+Remove-Item toychain.exe -ErrorAction SilentlyContinue
+```
+
+Recommended final verification:
+
+```powershell
+$env:Path = "C:\msys64\ucrt64\bin;$env:Path"
+$env:CGO_ENABLED="1"
+
+go test ./...
+go test -race ./...
+go vet ./...
+go build -o toychain.exe ./cmd/toychain
+Remove-Item toychain.exe -ErrorAction SilentlyContinue
+```
+
+---
+
+## Basic Single-Node Usage
 
 Build the CLI:
 
-```bash
-go build -o toychain ./cmd/toychain
-```
-
-On Windows PowerShell:
-
 ```powershell
 go build -o toychain.exe ./cmd/toychain
 ```
 
-## Verification
-
-The project was verified with:
+Create a new blockchain state:
 
 ```powershell
-go test ./...
-go vet ./...
-go build -o toychain.exe ./cmd/toychain
+.\toychain.exe init -force
 ```
 
-The automated tests cover deterministic hashing, canonical genesis validation, Merkle root calculation, Merkle-root tamper detection, Merkle proof generation/verification, proof-of-work target checks, signed transaction validation, wallet encryption/decryption, wrong-passphrase rejection, nonce validation, duplicate transaction rejection, invalid amount rejection, overspending rejection, pending-pool overspending rejection, previous-hash-link validation, JSON persistence, CLI error handling, REST API read and write endpoints, difficulty retargeting, longest-valid-chain fork resolution, pending-pool filtering after fork adoption, and tamper detection.
-
-## Command-Line Usage
-
-General format:
-
-```bash
-./toychain -data chain.json -difficulty 3 COMMAND
-```
-
-On Windows PowerShell:
-
-```powershell
-.\toychain.exe -data chain.json -difficulty 3 COMMAND
-```
-
-Common flags:
-
-| Flag | Description | Default |
-|---|---|---|
-| `-data` | JSON file used to save and load blockchain state | `toychain.json` |
-| `-difficulty` | Number of leading zero hex digits required in mined block hash | `3` |
-| `-max-block-tx` | Maximum number of transactions included in one mined block | `5` |
-| `-workers` | Number of mining workers. If `0`, it uses available CPU count | `0` |
-| `-timeout` | Mining timeout duration | `15s` |
-| `-retarget-interval` | Number of blocks between difficulty adjustments. Use `0` to disable retargeting | `5` |
-| `-target-block-time` | Target time between blocks used by difficulty retargeting | `10s` |
-
-## Wallet Commands
-
-### Create an Encrypted Wallet
+Create wallets:
 
 ```powershell
 .\toychain.exe wallet new -out alice.wallet.json -passphrase alice-pass
 .\toychain.exe wallet new -out bob.wallet.json -passphrase bob-pass
 ```
 
-Each wallet contains an Ed25519 public/private key pair. The private key is encrypted using AES-256-GCM with a standard-library-only passphrase-derived key.
-
-### Show Wallet Address
-
-```powershell
-.\toychain.exe wallet show -path alice.wallet.json
-.\toychain.exe wallet show -path bob.wallet.json
-```
-
-The output shows the wallet address and public key. The private key is not printed.
-
-## Blockchain Commands
-
-### Initialise a Chain
-
-```powershell
-.\toychain.exe -data demo.json -difficulty 3 init -force
-```
-
-### Add Faucet Funds
-
-Use the address from `wallet show`:
-
-```powershell
-.\toychain.exe -data demo.json -difficulty 3 faucet -to ALICE_ADDRESS -amount 100
-```
-
-### View Pending Transactions
-
-```powershell
-.\toychain.exe -data demo.json -difficulty 3 pending
-```
-
-### Mine Pending Transactions
-
-```powershell
-.\toychain.exe -data demo.json -difficulty 3 mine
-```
-
-### Add a Signed Transfer Transaction
-
-```powershell
-.\toychain.exe -data demo.json -difficulty 3 tx -wallet alice.wallet.json -passphrase alice-pass -to BOB_ADDRESS -amount 40
-```
-
-The sender is derived from the wallet address. The transaction is signed using the decrypted private key. The chain validates the signature using the public key stored in the transaction.
-
-### Export a Signed Transaction JSON File
-
-The `tx-sign` command signs a transaction locally but does not submit it to the pending pool. This is useful for the REST API, because the server should receive already-signed transactions instead of wallet passphrases.
-
-```powershell
-.\toychain.exe -data demo.json -difficulty 3 tx-sign -wallet alice.wallet.json -passphrase alice-pass -to BOB_ADDRESS -amount 40 -out signed_tx.json
-```
-
-The output file contains a complete signed transaction with sender address, recipient address, amount, nonce, public key, signature, and deterministic transaction ID.
-
-### Show Balances
-
-```powershell
-.\toychain.exe -data demo.json -difficulty 3 balances
-```
-
-Balances are derived by replaying the confirmed chain from genesis to the latest block. Balances are displayed by wallet address because the blockchain identity is the public-key-derived address, not a local human name.
-
-### Validate the Chain
-
-```powershell
-.\toychain.exe -data demo.json -difficulty 3 validate
-```
-
-Validation checks block structure, canonical genesis, stored hashes, recomputed hashes, Merkle roots, proof-of-work, previous-hash links, timestamps, transaction IDs, signatures, nonces, duplicate transaction IDs, sender balances, and overflow rules.
-
-### Print the Chain
-
-```powershell
-.\toychain.exe -data demo.json -difficulty 3 print
-```
-
-Printed blocks include height, timestamp, stored difficulty, previous hash, Merkle root, nonce, block hash, and transaction count. When retargeting is enabled, later blocks may show a different difficulty from earlier blocks.
-
-### Generate a Merkle Proof
-
-```powershell
-.\toychain.exe -data demo.json -difficulty 3 merkle-proof -height 2 -tx 0
-```
-
-The command prints JSON containing the block height, transaction index, transaction ID, transaction hash, Merkle root, sibling proof path, and a `valid` boolean produced by local proof verification.
-
-### Resolve a Fork
-
-The `resolve-fork` command compares the local state file with another state file that represents a competing chain. Both chains are validated first. The candidate chain is adopted only if it is valid and strictly longer than the local chain.
-
-```powershell
-.\toychain.exe -data local.json -difficulty 3 resolve-fork -candidate candidate.json
-```
-
-Dry-run mode shows the fork-choice result without saving changes:
-
-```powershell
-.\toychain.exe -data local.json -difficulty 3 resolve-fork -candidate candidate.json -dry-run
-```
-
-When a longer valid candidate is adopted, the local pending pool is replayed on top of the adopted chain. Pending transactions that still fit the new ledger are kept, while conflicting pending transactions are dropped. Candidate pending transactions are not imported because the fork-choice rule applies to confirmed blocks, not another node's mempool.
-
-### Tamper with a Transaction
-
-```powershell
-.\toychain.exe -data demo.json tamper -height 1 -tx 0 -amount 999
-```
-
-This deliberately changes a transaction amount without recalculating the Merkle root or re-mining. Running validation after this should fail.
-
-## End-to-End Example
-
-Windows PowerShell example:
-
-```powershell
-Remove-Item demo.json -ErrorAction SilentlyContinue
-Remove-Item alice.wallet.json -ErrorAction SilentlyContinue
-Remove-Item bob.wallet.json -ErrorAction SilentlyContinue
-
-.\toychain.exe wallet new -out alice.wallet.json -passphrase alice-pass
-.\toychain.exe wallet new -out bob.wallet.json -passphrase bob-pass
-
-.\toychain.exe wallet show -path alice.wallet.json
-.\toychain.exe wallet show -path bob.wallet.json
-```
-
-Copy the two addresses, then run:
-
-```powershell
-.\toychain.exe -data demo.json -difficulty 3 init -force
-.\toychain.exe -data demo.json -difficulty 3 faucet -to ALICE_ADDRESS -amount 100
-.\toychain.exe -data demo.json -difficulty 3 mine
-.\toychain.exe -data demo.json -difficulty 3 tx -wallet alice.wallet.json -passphrase alice-pass -to BOB_ADDRESS -amount 40
-.\toychain.exe -data demo.json -difficulty 3 mine
-.\toychain.exe -data demo.json -difficulty 3 balances
-.\toychain.exe -data demo.json -difficulty 3 validate
-.\toychain.exe -data demo.json -difficulty 3 print
-.\toychain.exe -data demo.json -difficulty 3 merkle-proof -height 2 -tx 0
-```
-
-Expected final balances:
-
-```text
-ALICE_ADDRESS    60
-BOB_ADDRESS      40
-```
-
-Expected validation result:
-
-```text
-VALID: 3 blocks checked
-```
-
-## REST API
-
-The project includes a local HTTP API using Go's standard `net/http` package. The API works like a small blockchain explorer and local node API. It can read chain data, validate the chain, accept faucet transactions, accept already-signed transfer transactions, mine pending transactions, and resolve local forks using a longest-valid-chain rule.
-
-Important security design: the API does **not** receive wallet passphrases, private keys, or wallet file paths. Wallets are unlocked only by the CLI/client. The API receives already-signed transactions and verifies them before adding them to the pending pool.
-
-Start the server. By default, the API should be bound to localhost only:
-
-```powershell
-.\toychain.exe -data demo.json -difficulty 3 serve
-```
-
-You can also provide the address explicitly:
-
-```powershell
-.\toychain.exe -data demo.json -difficulty 3 serve -addr 127.0.0.1:8080
-```
-
-Optional write-endpoint protection can be enabled with `-api-token`. When a token is configured, `POST /faucet`, `POST /transactions`, `POST /mine`, and `POST /resolve-fork` require the `X-API-Token` header. Read endpoints remain open.
-
-```powershell
-.\toychain.exe -data demo.json -difficulty 3 serve -addr 127.0.0.1:8080 -api-token dev-secret
-```
-
-Read endpoints:
-
-| Method | Endpoint | Purpose |
-|---|---|---|
-| `GET` | `/health` | Check server status |
-| `GET` | `/chain` | Return chain metadata, blocks, and pending transactions |
-| `GET` | `/blocks` | Return all blocks |
-| `GET` | `/blocks/{height}` | Return one block by height |
-| `GET` | `/balances` | Return confirmed balances |
-| `GET` | `/balances?pending=true` | Return balances including pending transactions |
-| `GET` | `/transactions/{id}` | Find a confirmed or pending transaction by ID |
-| `GET` | `/merkle-proof?height=2&tx=0` | Generate and verify a Merkle proof |
-| `GET` | `/validate` | Validate the chain and return JSON result |
-
-Write endpoints:
-
-| Method | Endpoint | Purpose |
-|---|---|---|
-| `POST` | `/faucet` | Add a faucet funding transaction to the pending pool |
-| `POST` | `/transactions` | Submit an already-signed transfer transaction to the pending pool |
-| `POST` | `/mine` | Mine pending transactions into a new block |
-| `POST` | `/resolve-fork` | Submit a competing state JSON and adopt it if it is longer and valid |
-
-PowerShell read examples:
-
-```powershell
-Invoke-RestMethod http://127.0.0.1:8080/health
-Invoke-RestMethod http://127.0.0.1:8080/blocks/2
-Invoke-RestMethod http://127.0.0.1:8080/balances
-Invoke-RestMethod "http://127.0.0.1:8080/merkle-proof?height=2&tx=0"
-Invoke-RestMethod http://127.0.0.1:8080/validate
-```
-
-If the server was started with `-api-token`, prepare headers before calling write endpoints:
-
-```powershell
-$headers = @{ "X-API-Token" = "dev-secret" }
-```
-
-If no API token was configured, omit the `-Headers $headers` part from the write examples.
-
-### Faucet API Example
-
-If you are running the API examples in a new PowerShell terminal, load the wallet addresses again first:
+Read wallet addresses:
 
 ```powershell
 $alice = (Get-Content .\alice.wallet.json -Raw | ConvertFrom-Json).address
 $bob = (Get-Content .\bob.wallet.json -Raw | ConvertFrom-Json).address
-
-Write-Host "Alice = $alice"
-Write-Host "Bob = $bob"
 ```
 
-Then submit a faucet transaction and mine it:
+Fund Alice:
 
 ```powershell
-$faucetBody = @{ to = $alice; amount = 100; memo = "api faucet" } | ConvertTo-Json
-
-Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8080/faucet -Headers $headers -Body $faucetBody -ContentType "application/json"
-Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8080/mine -Headers $headers -Body '{}' -ContentType "application/json"
+.\toychain.exe faucet -to "$alice" -amount 100
+.\toychain.exe mine
 ```
 
-### Signed Transaction API Example
-
-First, sign the transaction locally using the CLI. This keeps the wallet passphrase on the client side:
+Send a signed transfer:
 
 ```powershell
-.\toychain.exe -data demo.json -difficulty 3 tx-sign -wallet alice.wallet.json -passphrase alice-pass -to $bob -amount 40 -out signed_tx.json
+.\toychain.exe tx -wallet alice.wallet.json -passphrase alice-pass -to "$bob" -amount 25 -memo "payment"
 ```
 
-Then submit the already-signed transaction to the API and mine it:
+Mine the transfer:
 
 ```powershell
-Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8080/transactions -Headers $headers -Body (Get-Content signed_tx.json -Raw) -ContentType "application/json"
-Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8080/mine -Headers $headers -Body '{}' -ContentType "application/json"
+.\toychain.exe mine
 ```
 
-This design is closer to a standard blockchain node model: clients sign transactions locally, while the node/API verifies signatures, nonce sequence, duplicate transaction IDs, balances, and chain validity.
-
-## Invalid Transaction Examples
-
-Zero amount is rejected:
+Show balances:
 
 ```powershell
-.\toychain.exe -data demo.json -difficulty 3 tx -wallet alice.wallet.json -passphrase alice-pass -to BOB_ADDRESS -amount 0
+.\toychain.exe balances
 ```
 
-Negative amount is rejected:
+Validate the chain:
 
 ```powershell
-.\toychain.exe -data demo.json -difficulty 3 tx -wallet alice.wallet.json -passphrase alice-pass -to BOB_ADDRESS -amount -10
+.\toychain.exe validate
 ```
 
-Overspending is rejected:
+Print the chain:
 
 ```powershell
-.\toychain.exe -data demo.json -difficulty 3 tx -wallet alice.wallet.json -passphrase alice-pass -to BOB_ADDRESS -amount 150
+.\toychain.exe print
 ```
 
-Wrong wallet passphrase is rejected:
+---
+
+## CLI Commands
+
+```text
+wallet new -out FILE -passphrase PASS       create encrypted Ed25519 wallet
+wallet show -path FILE                      show wallet address/public key
+init [-force]                               create state file
+faucet -to ADDRESS -amount N                add funding transaction to pending pool
+tx -wallet FILE -passphrase PASS -to ADDRESS -amount N
+                                           add signed transfer to pending pool
+tx-sign -wallet FILE -passphrase PASS -to ADDRESS -amount N [-out FILE]
+                                           write signed transaction JSON without submitting
+mine                                        mine pending transactions into a block
+print                                       print readable chain
+validate                                    validate chain integrity
+balances [-pending]                         show account balances
+pending                                     list pending transactions
+merkle-proof -height N -tx I                print a transaction Merkle proof
+serve [-addr 127.0.0.1:8080] [-api-token TOKEN]
+                                           start single-node REST API server
+node -addr 127.0.0.1:8081 -peers URLS       start networked node HTTP service
+resolve-fork -candidate FILE [-dry-run]     compare with a competing state and adopt it if longer and valid
+tamper -height N -tx I -amount N            deliberately alter stored data for demo
+```
+
+---
+
+## Global Flags
+
+```text
+-data string                 JSON state path
+-difficulty int              proof-of-work leading-zero hex digits
+-max-block-tx int            maximum transactions per block
+-workers int                 mining workers; 0 means runtime.NumCPU
+-timeout duration            mining timeout
+-retarget-interval int       blocks per difficulty adjustment; 0 disables retargeting
+-target-block-time duration  target time between blocks for retargeting
+```
+
+Example:
 
 ```powershell
-.\toychain.exe -data demo.json -difficulty 3 tx -wallet alice.wallet.json -passphrase wrong-pass -to BOB_ADDRESS -amount 10
+.\toychain.exe -data node1.json -difficulty 1 -retarget-interval 0 init -force
 ```
 
-## JSON Persistence
+---
 
-The blockchain state is saved to the JSON file passed through the `-data` flag. The encrypted wallets are saved separately as wallet JSON files.
+## Wallets and Signed Transactions
 
-A clean genesis-only chain contains:
+Wallets use Ed25519 key pairs. The private key is stored in an encrypted wallet file. Transactions are signed locally using the wallet passphrase.
 
-```json
-{
-  "chain": [
-    {
-      "height": 0,
-      "timestamp": 0,
-      "difficulty": 5,
-      "transactions": [],
-      "merkle_root": "0000000000000000000000000000000000000000000000000000000000000000",
-      "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
-      "nonce": 2417102,
-      "hash": "0000050c5cad3e6cb229bb04eacc3c580834a93285f16f6dece119029021fcfd"
-    }
-  ],
-  "pending": []
-}
+Create a wallet:
+
+```powershell
+.\toychain.exe wallet new -out alice.wallet.json -passphrase alice-pass
 ```
+
+Show wallet metadata:
+
+```powershell
+.\toychain.exe wallet show -path alice.wallet.json
+```
+
+Create a signed transaction file without submitting it:
+
+```powershell
+.\toychain.exe tx-sign -wallet alice.wallet.json -passphrase alice-pass -to "$bob" -amount 25 -memo "network payment" -out tx.json
+```
+
+Submit the signed transaction to a networked node:
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8081/transactions -Body (Get-Content .\tx.json -Raw) -ContentType "application/json"
+```
+
+---
+
+## Merkle Proofs
+
+Each block stores a Merkle root calculated from the block transactions. Validation recomputes the Merkle root and rejects tampered blocks.
+
+Generate a Merkle proof:
+
+```powershell
+.\toychain.exe merkle-proof -height 1 -tx 0
+```
+
+The command returns JSON containing:
+
+```text
+block_height
+transaction_index
+transaction_id
+transaction_hash
+merkle_root
+proof
+valid
+```
+
+---
+
+## Tamper Detection Demo
+
+Create and mine a transaction first, then deliberately modify a stored transaction amount:
+
+```powershell
+.\toychain.exe tamper -height 1 -tx 0 -amount 999999
+```
+
+Validate the chain:
+
+```powershell
+.\toychain.exe validate
+```
+
+Expected result:
+
+```text
+INVALID
+```
+
+Validation fails because the transaction data no longer matches the stored Merkle root and block hash.
+
+---
+
+## Single-Node REST API Mode
+
+Start the REST API:
+
+```powershell
+.\toychain.exe serve -addr 127.0.0.1:8080
+```
+
+Start with API token protection for write endpoints:
+
+```powershell
+.\toychain.exe serve -addr 127.0.0.1:8080 -api-token dev-secret
+```
+
+Example read request:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8080/health
+```
+
+Example write request with token:
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8080/mine -Headers @{"X-API-Token"="dev-secret"}
+```
+
+---
+
+## Single-Node REST API Endpoints
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `GET` | `/health` | Check API health |
+| `GET` | `/chain` | Return full chain state |
+| `GET` | `/blocks` | Return blocks |
+| `GET` | `/blocks/{height}` | Return block by height |
+| `GET` | `/balances` | Return confirmed balances |
+| `GET` | `/balances?pending=true` | Return balances including pending transactions |
+| `GET` | `/transactions/{id}` | Find transaction by ID |
+| `GET` | `/merkle-proof?height=N&tx=I` | Return Merkle proof |
+| `GET` | `/validate` | Validate chain |
+| `POST` | `/faucet` | Add faucet transaction |
+| `POST` | `/transactions` | Submit signed transaction |
+| `POST` | `/mine` | Mine pending transactions |
+
+---
+
+## Networked Node Mode
+
+Assignment 2 extends the original single-node blockchain into a small local peer-to-peer network. Each node runs as an independent process with its own JSON state file and configured peer list. Nodes communicate over local HTTP endpoints.
+
+Start one node manually:
+
+```powershell
+.\toychain.exe -data node1.json -difficulty 1 -retarget-interval 0 node -addr 127.0.0.1:8081 -peers http://127.0.0.1:8082,http://127.0.0.1:8083
+```
+
+Start another node:
+
+```powershell
+.\toychain.exe -data node2.json -difficulty 1 -retarget-interval 0 node -addr 127.0.0.1:8082 -peers http://127.0.0.1:8081,http://127.0.0.1:8083
+```
+
+Start a third node:
+
+```powershell
+.\toychain.exe -data node3.json -difficulty 1 -retarget-interval 0 node -addr 127.0.0.1:8083 -peers http://127.0.0.1:8081,http://127.0.0.1:8082
+```
+
+---
+
+## Local Three-Node Cluster
+
+A PowerShell cluster launcher is provided for local testing.
+
+Start a three-node cluster:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\start-cluster.ps1 -Reset
+```
+
+Expected health check:
+
+```text
+Node 1: health=ok, height=0, pending=0, peers=2
+Node 2: health=ok, height=0, pending=0, peers=2
+Node 3: health=ok, height=0, pending=0, peers=2
+```
+
+Stop the cluster:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\stop-cluster.ps1
+```
+
+Stop and clean generated cluster state:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\stop-cluster.ps1 -Clean
+```
+
+Useful cluster checks:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8081/status
+Invoke-RestMethod http://127.0.0.1:8082/status
+Invoke-RestMethod http://127.0.0.1:8083/status
+
+Invoke-RestMethod http://127.0.0.1:8081/peers
+Invoke-RestMethod http://127.0.0.1:8081/pending
+Invoke-RestMethod http://127.0.0.1:8081/chain
+```
+
+---
+
+## Network API Endpoints
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `GET` | `/health` | Check node health |
+| `GET` | `/status` | Show current height, head hash, pending count, and peer count |
+| `GET` | `/peers` | List configured peers |
+| `GET` | `/chain` | Return chain and pending pool |
+| `GET` | `/blocks` | Return all blocks |
+| `GET` | `/blocks/{height}` | Return a block by height |
+| `GET` | `/pending` | Show pending transactions |
+| `GET` | `/balances` | Show confirmed balances |
+| `GET` | `/balances?pending=true` | Show balances including pending transactions |
+| `GET` | `/validate` | Validate the local chain |
+| `POST` | `/transactions` | Submit a signed transaction and gossip it |
+| `POST` | `/mine` | Mine pending transactions and gossip the new block |
+| `POST` | `/sync` | Download missing blocks from a peer |
+| `POST` | `/resolve-fork` | Download and adopt a longer valid peer chain |
+| `POST` | `/peer/transactions` | Peer-to-peer transaction gossip endpoint |
+| `POST` | `/peer/blocks` | Peer-to-peer block gossip endpoint |
+| `GET` | `/peer/status` | Peer status endpoint used by sync and reorg |
+| `GET` | `/peer/blocks/{height}` | Peer block download endpoint used by sync and reorg |
+
+---
+
+## Transaction Gossip
+
+When a signed transaction is submitted to one node through `/transactions`, the node:
+
+1. Validates the transaction.
+2. Checks for duplicate transaction IDs.
+3. Adds the transaction to the pending pool.
+4. Records the transaction ID as seen.
+5. Forwards the transaction to configured peers.
+
+Peer nodes receive transactions through `/peer/transactions`.
+
+Duplicate transaction IDs are ignored to prevent repeated forwarding and gossip loops.
+
+Example:
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8081/transactions -Body (Get-Content .\tx.json -Raw) -ContentType "application/json"
+```
+
+Check pending transactions on each node:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8081/pending
+Invoke-RestMethod http://127.0.0.1:8082/pending
+Invoke-RestMethod http://127.0.0.1:8083/pending
+```
+
+---
+
+## Block Gossip
+
+When a node mines a block through `/mine`, the node:
+
+1. Selects pending transactions.
+2. Mines a valid proof-of-work block.
+3. Appends the block locally.
+4. Removes confirmed transactions from pending.
+5. Broadcasts the block to peers.
+
+Peer nodes receive blocks through `/peer/blocks`.
+
+A receiving node accepts a block only if:
+
+- the block is valid,
+- the proof of work is correct,
+- the Merkle root is correct,
+- the block height is correct,
+- the block directly extends the local head.
+
+Mine using the network API:
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8081/mine -ContentType "application/json"
+```
+
+Check all node heads:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8081/status
+Invoke-RestMethod http://127.0.0.1:8082/status
+Invoke-RestMethod http://127.0.0.1:8083/status
+```
+
+---
+
+## Chain Synchronisation
+
+A new or lagging node can call `/sync` to download missing blocks from a peer. Blocks are downloaded one height at a time using peer endpoints and each block is validated before being appended.
+
+Example:
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8082/sync -Body '{"peer":"http://127.0.0.1:8081"}' -ContentType "application/json"
+```
+
+Expected response fields:
+
+```text
+peer
+before_height
+peer_height
+after_height
+head_hash
+blocks_downloaded
+synced
+```
+
+If the node was at height `0` and the peer was at height `2`, a successful sync returns:
+
+```text
+before_height = 0
+peer_height = 2
+after_height = 2
+blocks_downloaded = 2
+synced = True
+```
+
+---
+
+## Fork Resolution and Reorganisation
+
+If a node receives a competing block that does not directly extend its local head, the node can resolve the fork by downloading the peer chain and applying the fork-choice rule.
+
+The node adopts the candidate chain only if:
+
+- the candidate chain is valid,
+- the candidate chain is longer than the local chain.
+
+During reorganisation:
+
+- transactions from replaced local blocks are treated as orphaned,
+- orphaned transactions not present in the adopted chain are revalidated,
+- valid orphaned transactions return to the pending pool,
+- invalid or conflicting orphaned transactions are dropped.
+
+Manual fork resolution:
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8081/resolve-fork -Body '{"peer":"http://127.0.0.1:8082"}' -ContentType "application/json"
+```
+
+Important response fields:
+
+```text
+local_height
+candidate_height
+before_head_hash
+candidate_head_hash
+after_height
+after_head_hash
+decision
+adopted
+reason
+kept_pending
+dropped_pending
+```
+
+Example successful result:
+
+```text
+decision = adopt_candidate
+adopted = True
+reason = candidate chain is longer and valid
+kept_pending = 1
+dropped_pending = 0
+```
+
+---
+
+## Concurrency Safety
+
+The networked node wraps blockchain state using a mutex-protected node layer. Shared resources protected by the node layer include:
+
+- chain state,
+- pending transaction pool,
+- peer list,
+- seen transaction IDs,
+- seen block hashes.
+
+This is required because HTTP handlers, mining, gossip, sync, and fork resolution can access shared state concurrently.
+
+The project should pass:
+
+```powershell
+go test -race ./...
+```
+
+---
 
 ## Design Notes
 
-### Deterministic Hashing and Merkle Root
+### Account Model
 
-A block hash is computed using SHA-256 over a stable canonical block-header payload. The block's own `Hash` field is excluded from the hash calculation.
+This project uses an account-based ledger model. Balances are calculated by replaying all confirmed transactions from the genesis block. There is no UTXO change-output system.
 
-The block hash input includes:
+### Genesis Block
 
-1. block height,
-2. Unix timestamp,
-3. difficulty,
-4. previous block hash,
-5. Merkle root,
-6. nonce.
+The genesis block is deterministic. This makes nodes compatible because all nodes start from the same known genesis hash.
 
-The Merkle root commits to the full transaction list. Each transaction is hashed into a leaf using transaction ID, sender, recipient, amount, creation timestamp, memo, transaction nonce, public key, and signature. Leaf hashes are paired and hashed upward until one root remains. If a level has an odd number of hashes, the final hash is duplicated for that level.
+### Proof of Work
 
-Changing any transaction changes its transaction hash, which changes the Merkle root, which then invalidates the block hash unless the block is rebuilt and re-mined.
+Mining searches for a nonce that produces a block hash with the required number of leading zero hexadecimal digits.
 
-### Merkle Proofs
+For example, difficulty `1` requires a hash beginning with:
 
-A Merkle proof is a small list of sibling hashes that proves a transaction belongs to a block's Merkle root. The verifier starts from the transaction hash and combines it with each sibling hash in the correct left/right order until a root is reconstructed. If the reconstructed root equals the block's stored Merkle root, the transaction is included in that block.
+```text
+0
+```
 
-The CLI command `merkle-proof` demonstrates this by building a proof for a selected block height and transaction index, then verifying it locally before printing the JSON result.
+Difficulty `3` requires a hash beginning with:
 
+```text
+000
+```
+
+### Concurrent Mining
+
+Mining can use multiple goroutines. Each worker searches a different nonce sequence. The first worker to find a valid nonce returns the block result and the remaining workers are cancelled.
 
 ### Difficulty Retargeting
 
-Each mined block stores its own difficulty. The first non-genesis block uses the configured `-difficulty` value. After that, the node normally carries forward the latest block difficulty. When `-retarget-interval` is greater than `0`, the node reviews the previous interval of mined blocks and adjusts the next block difficulty by at most one level.
-
-The default retarget settings are:
-
-```text
--retarget-interval 5
--target-block-time 10s
-```
-
-If the recent blocks were mined much faster than the target time, the next difficulty increases by one, up to the maximum supported difficulty. If they were mined much slower, it decreases by one, down to the minimum supported difficulty. If the timing is close to the target range, the difficulty stays the same.
-
-Retargeting can be disabled for experiments with:
+Difficulty retargeting can increase or decrease mining difficulty based on block production speed. For Assignment 2 network demonstrations, retargeting is commonly disabled using:
 
 ```powershell
-.\toychain.exe -data demo.json -difficulty 3 -retarget-interval 0 mine
+-retarget-interval 0
 ```
 
-Validation checks that every non-genesis block satisfies its stored proof-of-work difficulty and, when retargeting is enabled, that each block's difficulty matches the expected retargeting rule for the previous chain state.
-
-### Wallets and Signatures
-
-Each wallet uses an Ed25519 public/private key pair. The account address is derived from the public key. A transfer transaction contains the sender address, recipient address, amount, nonce, public key, and signature.
-
-During validation:
-
-1. the public key is decoded,
-2. the sender address is recalculated from the public key,
-3. the signature is verified against the transaction signing payload,
-4. the nonce is checked against the expected sender nonce,
-5. the ledger rules are applied.
-
-This prevents a user from creating a transaction from someone else's address without the correct private key.
-
-### Encrypted Wallet Storage
-
-Wallet files store public information such as address and public key in plaintext, but the private key is encrypted. The project uses AES-256-GCM from the Go standard library and a standard-library-only iterative SHA-256 key derivation function.
-
-For production wallet software, a memory-hard KDF such as Argon2id or scrypt would be stronger. This project keeps the implementation standard-library-only for learning and assessment compatibility.
-
-### Ledger Model
-
-Balances are not stored as the source of truth. They are calculated by replaying confirmed transactions from the chain. Pending transactions are also replayed when checking whether a new pending transaction is valid.
+This keeps manual multi-node tests predictable.
 
 ### Validation
 
-Validation fails fast and reports the first offending block. It checks canonical genesis, height sequence, stored Merkle root, stored hash, recomputed hash, proof-of-work, previous-hash links, timestamps, transaction syntax, transaction IDs, signatures, nonces, duplicate IDs, sufficient balances, and overflow rules.
+Validation does not trust the saved JSON data. It recomputes and checks:
 
-### Fork Resolution API Example
+- canonical genesis block,
+- block height,
+- previous hash links,
+- block hash,
+- proof of work,
+- Merkle root,
+- difficulty rules,
+- transaction IDs,
+- signatures,
+- nonces,
+- duplicate transactions,
+- balances.
 
-`POST /resolve-fork` accepts a complete competing state JSON. The server validates the local chain and the candidate chain, then adopts the candidate only if it is valid and strictly longer.
+### Mempool
 
-```powershell
-Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8080/resolve-fork -Headers $headers -Body (Get-Content candidate.json -Raw) -ContentType "application/json"
-```
+The pending transaction pool stores valid transactions that have not yet been mined. When a block is mined or accepted from a peer, confirmed transactions are removed from pending.
 
-The response includes the local height, candidate height, decision, whether the candidate was adopted, and how many local pending transactions were kept or dropped after replaying them on the adopted chain.
+### Gossip Deduplication
 
-### REST API Design
+Each node tracks seen transaction IDs and seen block hashes. This prevents repeated forwarding between peers.
 
-The REST API loads the JSON state file, validates the chain for normal endpoints, and returns structured JSON responses. Invalid paths, unsupported methods, invalid block heights, invalid transaction IDs, invalid Merkle proof indexes, malformed request bodies, unsigned transactions, duplicate transactions, nonce errors, and insufficient balances return structured JSON error responses.
+### Fork Choice
 
-The write API is intentionally designed without wallet passphrases. `POST /transactions` accepts an already-signed transaction JSON object. The server verifies the transaction ID, signature, sender public key, nonce, duplicate transaction ID, and ledger rules before saving it to the pending pool. This keeps private key handling on the client side and is closer to a standard blockchain node model.
+The implemented fork-choice rule adopts a candidate chain only when it is valid and longer than the local chain. Equal-length or shorter chains are not adopted.
 
-For safer local testing, the server binds to `127.0.0.1:8080` by default instead of listening on all network interfaces. The optional `-api-token` flag protects state-changing endpoints with the `X-API-Token` header. This is not a replacement for full production API security, but it prevents accidental unauthenticated writes during local development.
+---
 
-Fork resolution is intentionally simple and educational. The local node accepts a competing state file or JSON body, validates the candidate chain, and adopts it only when the candidate confirmed chain is strictly longer than the local confirmed chain. This models a longest-valid-chain rule without implementing real peer-to-peer networking.
+## Assignment 2 Coverage
+
+The networked implementation covers the main Assignment 2 requirements:
+
+| Requirement | Implementation |
+|---|---|
+| Multiple independent nodes | `node` command with separate JSON state files |
+| HTTP interface and peer list | `node -addr ... -peers ...` |
+| Signed transactions | Ed25519 wallets and signed transfers |
+| Transaction gossip | `/transactions` and `/peer/transactions` |
+| Transaction deduplication | seen transaction ID tracking |
+| Block gossip | `/mine` and `/peer/blocks` |
+| Block validation before append | `AcceptBlock` and chain validation |
+| Chain sync | `/sync`, `/peer/status`, `/peer/blocks/{height}` |
+| Fork resolution | `/resolve-fork` and `ResolveForkFromPeer` |
+| Reorganisation | adoption of longer valid peer chain |
+| Orphan transaction handling | valid orphaned transactions return to pending |
+| Race-free state | mutex-protected `Node` wrapper |
+| Introspection API | `/status`, `/peers`, `/pending`, `/balances`, `/chain` |
+| Local cluster launcher | `scripts/start-cluster.ps1` and `scripts/stop-cluster.ps1` |
+| Race detector testing | `go test -race ./...` |
+
+---
 
 ## Known Constraints and Future Improvements
 
-This is a local educational blockchain simulator, not production money software.
+This is an educational toy blockchain, not a production cryptocurrency.
 
 Current constraints:
 
-- no peer-to-peer network
-- no distributed consensus beyond the local longest-valid-chain demonstration
-- no real finality
-- no transaction fees
-- no smart contracts
-- wallet passphrases are supplied through CLI flags, which can be exposed in shell history
-- the standard-library-only KDF is educational and weaker than Argon2id/scrypt
+- peer networking is local HTTP-based and intended for localhost multi-process testing,
+- peers are configured manually,
+- no automatic peer discovery,
+- no NAT traversal,
+- no public cross-machine deployment,
+- no transaction fees,
+- no gas model,
+- no smart contracts,
+- no EVM,
+- no real economic finality,
+- no cumulative-work fork choice,
+- no persistent peer database,
+- no automatic background sync loop,
+- no advanced mempool prioritisation.
 
-Useful future improvements:
+Possible future improvements:
 
-1. Use interactive hidden passphrase input.
-2. Replace the educational KDF with Argon2id or scrypt.
-3. Add HTTPS support, stronger authentication, rate limiting, and role-based API access.
-4. Add peer-to-peer node communication with peer discovery and network-based chain exchange.
-5. Add cumulative-work fork choice instead of simple block-count comparison.
-6. Add proof-of-authority mode for enterprise/private-chain validation.
-7. Add transaction fees or mining rewards for a more realistic incentive model.
+- automatic peer discovery,
+- periodic peer health checks,
+- automatic background sync,
+- cumulative-work fork choice,
+- transaction fees,
+- block rewards,
+- persistent mempool,
+- improved peer banning for invalid data,
+- Docker Compose cluster setup,
+- smart contract execution layer.
 
-## Research Report
+---
 
-The research report is available at:
+## Quick Demonstration Flow
 
-```text
-reports/research_report.md
-```
-
-## Quick Final Check
-
-Before submission, run:
+Start a clean three-node cluster:
 
 ```powershell
-go test ./...
-go vet ./...
-go build -o toychain.exe ./cmd/toychain
+powershell -ExecutionPolicy Bypass -File .\scripts\start-cluster.ps1 -Reset
 ```
+
+Check nodes:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8081/status
+Invoke-RestMethod http://127.0.0.1:8082/status
+Invoke-RestMethod http://127.0.0.1:8083/status
+```
+
+Create wallets:
+
+```powershell
+.\toychain.exe wallet new -out alice.wallet.json -passphrase alice-pass
+.\toychain.exe wallet new -out bob.wallet.json -passphrase bob-pass
+
+$alice = (Get-Content .\alice.wallet.json -Raw | ConvertFrom-Json).address
+$bob = (Get-Content .\bob.wallet.json -Raw | ConvertFrom-Json).address
+```
+
+Fund Alice on node 1 state before cluster testing, or use a prepared state file for demonstration. For simple API demonstrations, submit a signed transaction to one node and check that it appears on the other nodes.
+
+Submit a signed transaction:
+
+```powershell
+.\toychain.exe -data .cluster\node1.json -difficulty 1 -retarget-interval 0 tx-sign -wallet alice.wallet.json -passphrase alice-pass -to "$bob" -amount 25 -memo "demo" -out tx.json
+
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8081/transactions -Body (Get-Content .\tx.json -Raw) -ContentType "application/json"
+```
+
+Check pending pools:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8081/pending
+Invoke-RestMethod http://127.0.0.1:8082/pending
+Invoke-RestMethod http://127.0.0.1:8083/pending
+```
+
+Mine on node 1:
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8081/mine -ContentType "application/json"
+```
+
+Check all nodes have the same head:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8081/status
+Invoke-RestMethod http://127.0.0.1:8082/status
+Invoke-RestMethod http://127.0.0.1:8083/status
+```
+
+Stop cluster:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\stop-cluster.ps1 -Clean
+```
+
+---
+
