@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
 	"toyblockchain/internal/blockchain"
 )
 
@@ -35,18 +34,15 @@ type Status struct {
 
 // Node owns one local blockchain state and protects it for concurrent use.
 type Node struct {
-	mu sync.RWMutex
-
-	dataPath string
-	cfg      blockchain.Config
-	selfURL  string
-	state    blockchain.State
-
+	mu         sync.RWMutex
+	dataPath   string
+	cfg        blockchain.Config
+	selfURL    string
+	state      blockchain.State
 	peers      map[string]struct{}
 	seenTx     map[string]struct{}
 	seenBlocks map[string]struct{}
-
-	logger *log.Logger
+	logger     *log.Logger
 }
 
 // New loads a node from disk and prepares concurrency-safe network state.
@@ -57,7 +53,6 @@ func New(cfg Config) (*Node, error) {
 	if err := cfg.ChainConfig.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid blockchain config: %w", err)
 	}
-
 	state, err := blockchain.LoadState(cfg.DataPath)
 	if err != nil {
 		return nil, err
@@ -65,12 +60,10 @@ func New(cfg Config) (*Node, error) {
 	if err := blockchain.ValidateChainWithConfig(state.Chain, cfg.ChainConfig); err != nil {
 		return nil, fmt.Errorf("invalid local chain: %w", err)
 	}
-
 	logger := cfg.Logger
 	if logger == nil {
 		logger = log.New(io.Discard, "", 0)
 	}
-
 	n := &Node{
 		dataPath:   cfg.DataPath,
 		cfg:        cfg.ChainConfig,
@@ -81,15 +74,12 @@ func New(cfg Config) (*Node, error) {
 		seenBlocks: make(map[string]struct{}),
 		logger:     logger,
 	}
-
 	for _, peer := range cfg.Peers {
 		if normalized := normalizePeer(peer); normalized != "" {
 			n.peers[normalized] = struct{}{}
 		}
 	}
-
 	n.indexSeenLocked()
-
 	return n, nil
 }
 
@@ -97,9 +87,7 @@ func New(cfg Config) (*Node, error) {
 func (n *Node) Status() Status {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
-
 	head := n.state.Chain[len(n.state.Chain)-1]
-
 	return Status{
 		Height:       len(n.state.Chain) - 1,
 		HeadHash:     head.Hash,
@@ -112,7 +100,6 @@ func (n *Node) Status() Status {
 func (n *Node) Snapshot() blockchain.State {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
-
 	return cloneState(n.state)
 }
 
@@ -120,7 +107,6 @@ func (n *Node) Snapshot() blockchain.State {
 func (n *Node) Peers() []string {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
-
 	return sortedKeys(n.peers)
 }
 
@@ -128,7 +114,6 @@ func (n *Node) Peers() []string {
 func (n *Node) SelfURL() string {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
-
 	return n.selfURL
 }
 
@@ -137,8 +122,19 @@ func (n *Node) SelfURL() string {
 func (n *Node) SetSelfURL(url string) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-
 	n.selfURL = normalizePeer(url)
+}
+
+// IsKnownPeer reports whether a peer URL is configured for this node.
+func (n *Node) IsKnownPeer(peer string) bool {
+	normalized := normalizePeer(peer)
+	if normalized == "" {
+		return false
+	}
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	_, exists := n.peers[normalized]
+	return exists
 }
 
 // AddPeer adds a peer address to the local peer set.
@@ -147,14 +143,11 @@ func (n *Node) AddPeer(peer string) bool {
 	if normalized == "" {
 		return false
 	}
-
 	n.mu.Lock()
 	defer n.mu.Unlock()
-
 	if _, exists := n.peers[normalized]; exists {
 		return false
 	}
-
 	n.peers[normalized] = struct{}{}
 	return true
 }
@@ -164,23 +157,17 @@ func (n *Node) AddPeer(peer string) bool {
 func (n *Node) AddTransaction(tx blockchain.Transaction) (bool, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-
 	if _, exists := n.seenTx[tx.ID]; exists {
 		return false, nil
 	}
-
 	if err := n.state.AddPending(tx); err != nil {
 		return false, err
 	}
-
 	n.seenTx[tx.ID] = struct{}{}
-
 	if err := blockchain.SaveState(n.dataPath, n.state); err != nil {
 		return false, err
 	}
-
 	n.logger.Printf("transaction accepted id=%s pending=%d", tx.ID, len(n.state.Pending))
-
 	return true, nil
 }
 
@@ -188,23 +175,18 @@ func (n *Node) AddTransaction(tx blockchain.Transaction) (bool, error) {
 func (n *Node) MinePending(ctx context.Context, now time.Time) (blockchain.Block, blockchain.MiningStats, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-
 	block, stats, err := n.state.MinePending(ctx, n.cfg, now)
 	if err != nil {
 		return blockchain.Block{}, stats, err
 	}
-
 	n.seenBlocks[block.Hash] = struct{}{}
 	for _, tx := range block.Transactions {
 		n.seenTx[tx.ID] = struct{}{}
 	}
-
 	if err := blockchain.SaveState(n.dataPath, n.state); err != nil {
 		return blockchain.Block{}, stats, err
 	}
-
 	n.logger.Printf("block mined height=%d hash=%s txs=%d", block.Height, block.Hash, len(block.Transactions))
-
 	return block, stats, nil
 }
 
@@ -213,11 +195,9 @@ func (n *Node) MinePending(ctx context.Context, now time.Time) (blockchain.Block
 func (n *Node) AcceptBlock(block blockchain.Block) (bool, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-
 	if _, exists := n.seenBlocks[block.Hash]; exists {
 		return false, nil
 	}
-
 	head := n.state.Chain[len(n.state.Chain)-1]
 	if block.PrevHash != head.Hash {
 		return false, fmt.Errorf("%w: got prev_hash %s, expected %s", ErrBlockDoesNotExtendHead, block.PrevHash, head.Hash)
@@ -225,30 +205,23 @@ func (n *Node) AcceptBlock(block blockchain.Block) (bool, error) {
 	if block.Height != head.Height+1 {
 		return false, fmt.Errorf("%w: block height %d does not extend local height %d", ErrBlockDoesNotExtendHead, block.Height, head.Height)
 	}
-
 	candidate := cloneState(n.state)
 	candidate.Chain = append(candidate.Chain, cloneBlock(block))
 	candidate.Pending = removeConfirmedTransactions(candidate.Pending, block.Transactions)
-
 	if err := blockchain.ValidateChainWithConfig(candidate.Chain, n.cfg); err != nil {
 		return false, err
 	}
-
 	n.state = candidate
 	n.seenBlocks[block.Hash] = struct{}{}
 	for _, tx := range block.Transactions {
 		n.seenTx[tx.ID] = struct{}{}
 	}
-
 	if err := blockchain.SaveState(n.dataPath, n.state); err != nil {
 		return false, err
 	}
-
 	n.logger.Printf("block accepted height=%d hash=%s txs=%d", block.Height, block.Hash, len(block.Transactions))
-
 	return true, nil
 }
-
 func (n *Node) indexSeenLocked() {
 	for _, block := range n.state.Chain {
 		n.seenBlocks[block.Hash] = struct{}{}
@@ -256,24 +229,20 @@ func (n *Node) indexSeenLocked() {
 			n.seenTx[tx.ID] = struct{}{}
 		}
 	}
-
 	for _, tx := range n.state.Pending {
 		n.seenTx[tx.ID] = struct{}{}
 	}
 }
-
 func (n *Node) resetSeenLocked() {
 	n.seenTx = make(map[string]struct{})
 	n.seenBlocks = make(map[string]struct{})
 	n.indexSeenLocked()
 }
-
 func normalizePeer(peer string) string {
 	peer = strings.TrimSpace(peer)
 	peer = strings.TrimRight(peer, "/")
 	return peer
 }
-
 func sortedKeys(values map[string]struct{}) []string {
 	keys := make([]string, 0, len(values))
 	for key := range values {
@@ -282,13 +251,11 @@ func sortedKeys(values map[string]struct{}) []string {
 	sort.Strings(keys)
 	return keys
 }
-
 func removeConfirmedTransactions(pending []blockchain.Transaction, confirmed []blockchain.Transaction) []blockchain.Transaction {
 	confirmedIDs := make(map[string]struct{}, len(confirmed))
 	for _, tx := range confirmed {
 		confirmedIDs[tx.ID] = struct{}{}
 	}
-
 	kept := make([]blockchain.Transaction, 0, len(pending))
 	for _, tx := range pending {
 		if _, included := confirmedIDs[tx.ID]; included {
@@ -296,17 +263,14 @@ func removeConfirmedTransactions(pending []blockchain.Transaction, confirmed []b
 		}
 		kept = append(kept, tx)
 	}
-
 	return kept
 }
-
 func cloneState(state blockchain.State) blockchain.State {
 	return blockchain.State{
 		Chain:   cloneChain(state.Chain),
 		Pending: cloneTransactions(state.Pending),
 	}
 }
-
 func cloneChain(chain []blockchain.Block) []blockchain.Block {
 	copied := make([]blockchain.Block, len(chain))
 	for i, block := range chain {
@@ -314,12 +278,10 @@ func cloneChain(chain []blockchain.Block) []blockchain.Block {
 	}
 	return copied
 }
-
 func cloneBlock(block blockchain.Block) blockchain.Block {
 	block.Transactions = cloneTransactions(block.Transactions)
 	return block
 }
-
 func cloneTransactions(txs []blockchain.Transaction) []blockchain.Transaction {
 	copied := make([]blockchain.Transaction, len(txs))
 	copy(copied, txs)
