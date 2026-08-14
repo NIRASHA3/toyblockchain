@@ -2,7 +2,7 @@
 
 A pure Go toy blockchain and ledger simulator developed for coursework. The project started as a single-node proof-of-work blockchain and was extended into a small local network of independent nodes for Assignment 2.
 
-The implementation demonstrates blockchain fundamentals such as blocks, hashes, proof-of-work, signed transactions, wallet-based transfers, Merkle roots, ledger replay, REST APIs, transaction gossip, block gossip, chain synchronisation, cumulative-work fork resolution, and race-free shared state.
+The implementation demonstrates blockchain fundamentals such as blocks, hashes, proof-of-work, signed transactions, wallet-based transfers, Merkle roots, ledger replay, REST APIs, transaction gossip, block gossip, chain synchronisation, peer discovery, cumulative-work fork resolution, and race-free shared state.
 
 ---
 
@@ -51,6 +51,7 @@ The implementation demonstrates blockchain fundamentals such as blocks, hashes, 
 - Multiple independent node processes
 - Local HTTP-based peer-to-peer communication
 - Configurable peer list
+- Peer discovery from configured seed peers
 - Transaction gossip with deduplication
 - Block gossip with deduplication
 - Chain synchronisation for new or lagging nodes
@@ -84,6 +85,7 @@ toyblockchain/
 │   │   └── wallet.go
 │   └── node/
 │       ├── api.go
+│       ├── discovery.go
 │       ├── gossip.go
 │       ├── node.go
 │       ├── reorg.go
@@ -257,7 +259,8 @@ pending                                     list pending transactions
 merkle-proof -height N -tx I                print a transaction Merkle proof
 serve [-addr 127.0.0.1:8080] [-api-token TOKEN]
                                            start single-node REST API server
-node -addr 127.0.0.1:8081 -peers URLS       start networked node HTTP service
+node -addr 127.0.0.1:8081 -peers URLS [-discover]
+                                           start networked node HTTP service
 resolve-fork -candidate FILE [-dry-run]     compare with a competing state and adopt it if it has more cumulative work and is valid
 tamper -height N -tx I -amount N            deliberately alter stored data for demo
 ```
@@ -411,7 +414,7 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8080/mine -Headers @{"X-API
 
 ## Networked Node Mode
 
-Assignment 2 extends the original single-node blockchain into a small local peer-to-peer network. Each node runs as an independent process with its own JSON state file and configured peer list. Nodes communicate over local HTTP endpoints.
+Assignment 2 extends the original single-node blockchain into a small local peer-to-peer network. Each node runs as an independent process with its own JSON state file and configured peer list. Nodes communicate over local HTTP endpoints. A node can also use peer discovery to learn additional peers from one or more configured seed peers.
 
 Start one node manually:
 
@@ -430,6 +433,14 @@ Start a third node:
 ```powershell
 .\toychain.exe -data node3.json -difficulty 1 -retarget-interval 0 node -addr 127.0.0.1:8083 -peers http://127.0.0.1:8081,http://127.0.0.1:8082
 ```
+
+Start a joining node with one seed peer and discover the rest of the local network:
+
+```powershell
+.\toychain.exe -data node4.json -difficulty 1 -retarget-interval 0 node -addr 127.0.0.1:8084 -peers http://127.0.0.1:8081 -discover
+```
+
+The `-discover` flag contacts the configured seed peer, reads its peer list, and adds newly discovered peer URLs to the joining node.
 
 ---
 
@@ -483,7 +494,7 @@ Invoke-RestMethod http://127.0.0.1:8081/chain
 |---|---|---|
 | `GET` | `/health` | Check node health |
 | `GET` | `/status` | Show current height, head hash, pending count, and peer count |
-| `GET` | `/peers` | List configured peers |
+| `GET` | `/peers` | List configured and discovered peers |
 | `GET` | `/chain` | Return chain and pending pool |
 | `GET` | `/blocks` | Return all blocks |
 | `GET` | `/blocks/{height}` | Return a block by height |
@@ -491,6 +502,7 @@ Invoke-RestMethod http://127.0.0.1:8081/chain
 | `GET` | `/balances` | Show confirmed balances |
 | `GET` | `/balances?pending=true` | Show balances including pending transactions |
 | `GET` | `/validate` | Validate the local chain |
+| `POST` | `/discover-peers` | Learn additional peers from configured seed peers |
 | `POST` | `/transactions` | Submit a signed transaction and gossip it |
 | `POST` | `/mine` | Mine pending transactions and gossip the new block |
 | `POST` | `/sync` | Download missing blocks from a peer |
@@ -499,6 +511,37 @@ Invoke-RestMethod http://127.0.0.1:8081/chain
 | `POST` | `/peer/blocks` | Peer-to-peer block gossip endpoint |
 | `GET` | `/peer/status` | Peer status endpoint used by sync and reorg |
 | `GET` | `/peer/blocks/{height}` | Peer block download endpoint used by sync and reorg |
+
+
+## Peer Discovery
+
+Peer discovery is a stretch-goal feature that allows a node to learn more peers from its existing seed peers. A joining node does not need to be manually configured with every peer in the local cluster. It can start with one known seed peer and then ask that peer for its peer list.
+
+Start a joining node with discovery enabled:
+
+```powershell
+.\toychain.exe -data node4.json -difficulty 1 -retarget-interval 0 node -addr 127.0.0.1:8084 -peers http://127.0.0.1:8081 -discover
+```
+
+Run discovery manually through the API:
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8084/discover-peers -ContentType "application/json"
+```
+
+The response includes:
+
+```text
+before_count
+after_count
+peers_contacted
+peers_added
+discovered
+peers
+errors
+```
+
+Discovery is intentionally bounded and local. It skips empty peer URLs, skips the node's own URL, ignores duplicates, and limits how many peers are contacted in a single discovery run. This keeps the implementation simple and suitable for localhost experiments without adding third-party peer-to-peer frameworks or public-network behaviour.
 
 ---
 
@@ -741,6 +784,10 @@ The pending transaction pool stores valid transactions that have not yet been mi
 
 Each node tracks seen transaction IDs and seen block hashes. This prevents repeated forwarding between peers.
 
+### Peer Discovery
+
+Peer discovery starts from one or more configured seed peers. During discovery, a node calls `/peers` on known peers, adds newly learned peer URLs, and can then contact those newly learned peers in the same bounded discovery run. This helps a small local network form from a single seed address while still keeping the project localhost-only and simple to inspect.
+
 ### Fork Choice
 
 The implemented fork-choice rule uses cumulative proof-of-work instead of simple block count. A candidate chain is adopted only when it is valid and has more cumulative work than the local chain. This is closer to real proof-of-work blockchain behaviour because a shorter chain with higher difficulty can outweigh a longer low-difficulty chain.
@@ -755,6 +802,7 @@ The networked implementation covers the main Assignment 2 requirements:
 |---|---|
 | Multiple independent nodes | `node` command with separate JSON state files |
 | HTTP interface and peer list | `node -addr ... -peers ...` |
+| Peer discovery stretch goal | `node -discover` and `POST /discover-peers` |
 | Signed transactions | Ed25519 wallets and signed transfers |
 | Transaction gossip | `/transactions` and `/peer/transactions` |
 | Transaction deduplication | seen transaction ID tracking |
@@ -778,8 +826,7 @@ This is an educational toy blockchain, not a production cryptocurrency.
 Current constraints:
 
 - peer networking is local HTTP-based and intended for localhost multi-process testing,
-- peers are configured manually,
-- no automatic peer discovery,
+- peer discovery requires at least one manually configured seed peer,
 - no NAT traversal,
 - no public cross-machine deployment,
 - no transaction fees,
@@ -793,7 +840,6 @@ Current constraints:
 
 Possible future improvements:
 
-- automatic peer discovery,
 - periodic peer health checks,
 - automatic background sync,
 - transaction fees,

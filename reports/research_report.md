@@ -1,7 +1,7 @@
 ﻿# Research Report: Toy Blockchain and Ledger Simulator
 ## 1. Project scope and problem analysis
-This project implements a local command-line blockchain and ledger simulator in pure Go. The system demonstrates how blockchain data structures, proof-of-work mining, signed transactions, Merkle-root-based transaction commitment, ledger replay, tamper detection, difficulty retargeting, HTTP APIs, peer communication, gossip propagation, chain synchronisation, and fork resolution work together inside a small blockchain network.
-The implementation runs without third-party blockchain frameworks. Each node stores its own JSON state file and exposes an HTTP interface. In networked mode, multiple local node processes are started on different ports and connected through configured peer URLs. This allows transactions and blocks to propagate between nodes, allows lagging nodes to synchronise from peers, and allows nodes to resolve forks by adopting a heavier valid chain with more cumulative proof-of-work.
+This project implements a local command-line blockchain and ledger simulator in pure Go. The system demonstrates how blockchain data structures, proof-of-work mining, signed transactions, Merkle-root-based transaction commitment, ledger replay, tamper detection, difficulty retargeting, HTTP APIs, peer communication, gossip propagation, chain synchronisation, peer discovery, and fork resolution work together inside a small blockchain network.
+The implementation runs without third-party blockchain frameworks. Each node stores its own JSON state file and exposes an HTTP interface. In networked mode, multiple local node processes are started on different ports and connected through configured peer URLs or discovered from seed peers. This allows transactions and blocks to propagate between nodes, allows a joining node to learn additional peers, allows lagging nodes to synchronise from peers, and allows nodes to resolve forks by adopting a heavier valid chain with more cumulative proof-of-work.
 The main problem addressed by this project is how a blockchain node can maintain a consistent local view of the ledger while receiving transactions, mined blocks, and competing chain data from other nodes. The implementation focuses on correctness and observability rather than production-level scalability. Each critical state transition is validated by replaying the chain and checking block structure, proof-of-work, Merkle roots, digital signatures, sender nonces, duplicate transaction IDs, and account balances.
 ## 2. Research background
 ### 2.1 Proof-of-work and heaviest-chain reasoning
@@ -11,9 +11,9 @@ The simulator estimates each block's work from its difficulty. Since difficulty 
 Blockchain networks rely on propagation of transactions and blocks between peers. Research on Bitcoin propagation shows that network delay can cause nodes to temporarily observe different heads. When two valid blocks are mined close together, different peers may accept different blocks first, causing a temporary fork. A fork-choice rule is then required so nodes can eventually converge when one branch becomes preferable.
 This simulator reproduces the same concept locally. A node broadcasts valid transactions and mined blocks to configured peers. If a peer receives a block that directly extends its current head, it validates and appends it. If the block does not extend the local head, the peer treats it as fork evidence and can download the peer chain for fork resolution.
 ### 2.3 Blockchain challenges and opportunities
-Blockchain systems combine cryptography, consensus, distributed systems, and application design. Survey literature identifies important challenges such as consensus design, scalability, privacy, and security. This simulator intentionally focuses on a small subset of those problems: transaction authenticity, tamper-evident block structure, local peer communication, chain synchronisation, and fork handling. It does not attempt to implement public blockchain economics, smart contracts, validator incentives, or a production peer-discovery protocol.
+Blockchain systems combine cryptography, consensus, distributed systems, and application design. Survey literature identifies important challenges such as consensus design, scalability, privacy, and security. This simulator intentionally focuses on a small subset of those problems: transaction authenticity, tamper-evident block structure, local peer communication, chain synchronisation, and fork handling. It does not attempt to implement public blockchain economics, smart contracts, validator incentives, NAT traversal, or a production-grade public peer-discovery protocol.
 ### 2.4 Race-free implementation in Go
-The networked node handles concurrent HTTP requests, mining, gossip, synchronisation, and fork resolution. These operations can access shared state such as the chain, pending transaction pool, peer list, and deduplication maps. Go's race detector is designed to detect data races during runtime testing by using the `-race` flag. This project therefore uses a mutex-protected node wrapper and verifies the implementation with:
+The networked node handles concurrent HTTP requests, mining, gossip, peer discovery, synchronisation, and fork resolution. These operations can access shared state such as the chain, pending transaction pool, peer list, and deduplication maps. Go's race detector is designed to detect data races during runtime testing by using the `-race` flag. This project therefore uses a mutex-protected node wrapper and verifies the implementation with:
 ```powershell
 go test -race ./...
 ```
@@ -27,7 +27,7 @@ internal/node
 ```
 The `cmd/toychain` package contains the command-line interface, the single-node REST API, and the networked node command. It parses global flags such as `-data`, `-difficulty`, `-retarget-interval`, and `-target-block-time`, then calls the appropriate blockchain or node operation.
 The `internal/blockchain` package contains the core blockchain domain logic. It defines blocks, transactions, wallets, Merkle roots, proof-of-work mining, validation, ledger replay, state persistence, difficulty retargeting, and local fork resolution.
-The `internal/node` package adds the networked node layer. It wraps the blockchain state with concurrency protection and exposes HTTP endpoints for status inspection, transaction gossip, block gossip, chain synchronisation, and network fork resolution.
+The `internal/node` package adds the networked node layer. It wraps the blockchain state with concurrency protection and exposes HTTP endpoints for status inspection, transaction gossip, block gossip, peer discovery, chain synchronisation, and network fork resolution.
 The `scripts` folder contains PowerShell scripts for starting and stopping a three-node local cluster.
 ## 4. Main data types
 The main blockchain types are:
@@ -45,6 +45,7 @@ The main networked node types are:
 - `BlockGossipResult`: block acceptance, forwarding, and optional reorganisation result.
 - `SyncResult`: result of downloading missing blocks from a peer.
 - `ReorgResult`: result of downloading and resolving a competing peer chain.
+- `DiscoveryResult`: result of contacting seed peers and adding newly discovered peers.
 ## 5. Hashing and Merkle-root design
 A block hash is computed using SHA-256 over a canonical block-header payload. The block's own `Hash` field is excluded from the hash calculation. The field order is:
 1. block height,
@@ -113,7 +114,9 @@ The node layer protects shared state with a mutex. Protected state includes:
 - seen transaction IDs,
 - seen block hashes,
 - local self URL.
-The HTTP handlers call methods on the `Node` type rather than directly mutating blockchain state. This keeps chain updates, pending-pool updates, gossip deduplication, synchronisation, and reorganisation safe under concurrent requests.
+The HTTP handlers call methods on the `Node` type rather than directly mutating blockchain state. This keeps chain updates, pending-pool updates, gossip deduplication, peer discovery, synchronisation, and reorganisation safe under concurrent requests.
+
+Peer discovery extends the static peer-list design without changing the local-only scope of the project. A node can start from one manually configured seed peer, call `/peers` on that seed, and add the returned peer URLs to its own peer set. The discovery process skips duplicates and the node's own URL, and it is bounded so one discovery run cannot expand without limit.
 ## 11. Network API and wire format
 The network API includes read endpoints and peer endpoints.
 Important read and control endpoints:
@@ -129,6 +132,7 @@ GET  /balances
 GET  /validate
 POST /transactions
 POST /mine
+POST /discover-peers
 POST /sync
 POST /resolve-fork
 ```
@@ -154,7 +158,21 @@ Block gossip uses:
 }
 ```
 The `origin` field helps a receiving node avoid immediately forwarding the same item back to the peer it came from.
-## 12. Transaction gossip
+
+## 12. Peer discovery
+Peer discovery allows a node to learn additional peers from existing seed peers. Before this stretch goal, every node had to be started with the full peer list manually. With discovery, a joining node can start with one known seed peer:
+```powershell
+.\toychain.exe -data node4.json -difficulty 1 -retarget-interval 0 node -addr 127.0.0.1:8084 -peers http://127.0.0.1:8081 -discover
+```
+The joining node contacts the seed through `/peers`, reads the peer list returned by that seed, and adds any new peer URLs to its own local peer set. Discovery can also be triggered manually through:
+```powershell
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8084/discover-peers -ContentType "application/json"
+```
+The response reports the number of peers known before discovery, the number known after discovery, how many peers were contacted, how many were added, the discovered peer URLs, the final peer list, and any warning errors.
+
+This feature demonstrates how a small network can form from a seed address while still staying inside the assignment scope. It does not use libp2p, does not perform NAT traversal, and does not attempt public internet discovery. It remains a simple localhost protocol built on the existing `/peers` endpoint.
+
+## 13. Transaction gossip
 When a signed transaction is submitted to `/transactions`, the node validates the transaction and checks whether the transaction ID has already been seen. If it is new and valid, the transaction is added to the pending pool and forwarded to peers through `/peer/transactions`.
 The experiment showed that submitting one signed transaction to node 1 resulted in:
 ```text
@@ -168,17 +186,17 @@ accepted = False
 gossiped = 0
 ```
 This demonstrates deduplication. The node recognised the transaction ID as already seen and did not forward it again, preventing gossip loops.
-## 13. Block gossip
+## 14. Block gossip
 When a node mines through `/mine`, it selects pending transactions, mines a valid proof-of-work block, appends the block locally, removes confirmed transactions from pending, and broadcasts the block to peers through `/peer/blocks`.
 A receiving peer validates the block before appending it. The block is accepted only if it is valid and directly extends the local head. After mining on node 1, the experiment showed that all three nodes reached the same height and the same head hash, and pending transaction counts returned to zero. This demonstrates successful block propagation and mempool consistency after confirmation.
-## 14. Chain synchronisation
+## 15. Chain synchronisation
 Chain synchronisation supports new or lagging nodes. A node can call `/sync` with a peer URL:
 ```powershell
 Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8084/sync -Body '{"peer":"http://127.0.0.1:8081"}' -ContentType "application/json"
 ```
 The syncing node first reads the peer status, compares heights, and downloads missing blocks one by one using `/peer/blocks/{height}`. Each downloaded block is validated before being appended.
 The experiment used a new node with only the genesis block. After calling `/sync`, the node downloaded the missing blocks and reached the same height and head hash as the peer. This confirms that a lagging node can catch up without directly copying a state file.
-## 15. Fork resolution and reorganisation
+## 16. Fork resolution and reorganisation
 Fork resolution handles competing chains. If a node receives a peer block that does not extend its current head, the block may represent a competing branch. The node can download the peer chain and run fork resolution.
 Manual fork resolution is triggered with:
 ```powershell
@@ -201,7 +219,7 @@ kept_pending = 1
 dropped_pending = 0
 ```
 After reorganisation, node A and node B had the same height and head hash. Node A also had one pending transaction, showing that the transaction from the replaced local branch was correctly returned to the pending pool. The response also exposed local and candidate cumulative work values, making the fork-choice decision easier to inspect.
-## 16. Local cluster launcher
+## 17. Local cluster launcher
 The local cluster launcher starts three connected node processes for demonstration:
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\start-cluster.ps1 -Reset
@@ -218,7 +236,7 @@ The stop script terminates the recorded node processes:
 powershell -ExecutionPolicy Bypass -File .\scripts\stop-cluster.ps1 -Clean
 ```
 This provides a repeatable local test environment for transaction gossip, block gossip, synchronisation, and fork resolution.
-## 17. Experimental verification
+## 18. Experimental verification
 The final implementation was verified using:
 ```powershell
 go test ./...
@@ -234,28 +252,28 @@ The tests passed for:
 - mining and retargeting,
 - local fork resolution,
 - networked node state wrapper,
+- peer discovery,
 - transaction gossip,
 - block gossip,
 - chain synchronisation,
 - fork reorganisation using cumulative proof-of-work,
 - race detector execution.
 The race detector result is important because the networked node can receive concurrent HTTP requests while also mining, gossiping, syncing, or reorganising. The mutex-protected `Node` wrapper is therefore a necessary design choice rather than an optional improvement.
-## 18. Discussion
-### 18.1 Finality
+## 19. Discussion
+### 19.1 Finality
 The simulator uses a heaviest-valid-chain rule based on cumulative proof-of-work. This means finality is probabilistic rather than absolute. A transaction confirmed in a block can still be reorganised out if a valid competing chain with more cumulative work appears. In practice, blockchain users wait for additional confirmations because each new block on top of a transaction makes replacement less likely.
-### 18.2 51% attack discussion
+### 19.2 51% attack discussion
 In a proof-of-work network, an attacker with majority mining power can attempt to create a longer alternative chain. This can allow double-spending or reversal of recent transactions. This simulator does not model real mining economics or network-wide hash power, but its fork experiment demonstrates the structural idea: if a valid chain with more cumulative proof-of-work is presented, the node may adopt it and move transactions from the replaced branch back into pending.
-### 18.3 Malicious peer behaviour
-Digital signatures prevent a peer from forging transfers from another user's wallet. Merkle roots and block hashes prevent silent transaction tampering. Full-chain validation prevents a node from adopting a structurally invalid chain. However, malicious peers could still attempt denial-of-service behaviour by sending repeated invalid blocks, large requests, stale blocks, or conflicting data. Production systems would need peer scoring, rate limiting, banning, stronger authentication, and more careful resource controls.
-### 18.4 Cumulative work fork choice
+### 19.3 Malicious peer behaviour
+Digital signatures prevent a peer from forging transfers from another user's wallet. Merkle roots and block hashes prevent silent transaction tampering. Full-chain validation prevents a node from adopting a structurally invalid chain. However, malicious peers could still attempt denial-of-service behaviour by sending repeated invalid blocks, large requests, stale blocks, misleading peer lists, or conflicting data. Production systems would need peer scoring, rate limiting, banning, stronger authentication, and more careful resource controls.
+### 19.4 Cumulative work fork choice
 The simulator now uses cumulative proof-of-work as the fork-choice metric. This is more realistic than comparing block count alone because difficulty affects how much mining effort a block represents. In this project, a block's estimated work is calculated as `16^difficulty`, and the cumulative work of a chain is the sum of the work of its blocks.
 This means a longer chain is not automatically selected. A candidate chain is adopted only when it is valid and has more cumulative work than the local chain. This improves the earlier longer-chain rule and demonstrates the Assignment 2 stretch goal called heaviest chain.
-## 19. Constraints and future improvements
+## 20. Constraints and future improvements
 This implementation is suitable for local blockchain learning and assessment demonstrations. It is not production cryptocurrency software.
 Current constraints:
 - peer networking is local HTTP-based and intended for localhost testing,
-- peers are configured manually,
-- no automatic peer discovery,
+- peer discovery requires at least one manually configured seed peer,
 - no NAT traversal,
 - no public network deployment,
 - no transaction fees,
@@ -266,18 +284,17 @@ Current constraints:
 - no automatic background sync loop,
 - no advanced malicious-peer defence.
 Future improvements:
-1. Add automatic peer discovery.
-2. Add periodic peer health checks.
-3. Add automatic background synchronisation.
-4. Add transaction fees and mining rewards.
-5. Add persistent mempool storage.
-6. Add peer banning for repeated invalid data.
-7. Add Docker Compose support for easier cluster demonstrations.
-8. Add stronger API authentication and rate limiting.
-9. Add a smart contract execution layer as a separate extension.
-## 20. Conclusion
-The project successfully demonstrates the main internal mechanisms of a blockchain node and extends them into a small local network. The blockchain core provides deterministic hashing, proof-of-work, Merkle-root validation, signed transactions, replay protection, ledger replay, tamper detection, and difficulty retargeting. The networked node layer adds transaction gossip, block gossip, chain synchronisation, fork resolution, reorganisation, orphaned transaction handling, and race-safe shared state.
-The experiments show that a transaction submitted to one node propagates to peers, duplicate transactions are not re-gossiped, mined blocks propagate and clear pending pools, lagging nodes can synchronise from peers, and a node can converge to a heavier valid peer chain while returning valid orphaned transactions to pending. Overall, the simulator provides a clear and testable model of blockchain behaviour while keeping the implementation small enough to understand and verify.
+1. Add periodic peer health checks.
+2. Add automatic background synchronisation.
+3. Add transaction fees and mining rewards.
+4. Add persistent mempool storage.
+5. Add peer banning for repeated invalid data.
+6. Add Docker Compose support for easier cluster demonstrations.
+7. Add stronger API authentication and rate limiting.
+8. Add a smart contract execution layer as a separate extension.
+## 21. Conclusion
+The project successfully demonstrates the main internal mechanisms of a blockchain node and extends them into a small local network. The blockchain core provides deterministic hashing, proof-of-work, Merkle-root validation, signed transactions, replay protection, ledger replay, tamper detection, and difficulty retargeting. The networked node layer adds peer discovery, transaction gossip, block gossip, chain synchronisation, fork resolution, reorganisation, orphaned transaction handling, and race-safe shared state.
+The experiments show that a joining node can learn peers from a seed, a transaction submitted to one node propagates to peers, duplicate transactions are not re-gossiped, mined blocks propagate and clear pending pools, lagging nodes can synchronise from peers, and a node can converge to a heavier valid peer chain while returning valid orphaned transactions to pending. Overall, the simulator provides a clear and testable model of blockchain behaviour while keeping the implementation small enough to understand and verify.
 ## References
 - Nakamoto, S. (2008). *Bitcoin: A Peer-to-Peer Electronic Cash System*. https://bitcoin.org/bitcoin.pdf
 - Decker, C., & Wattenhofer, R. (2013). *Information Propagation in the Bitcoin Network*. IEEE P2P 2013.
