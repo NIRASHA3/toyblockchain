@@ -11,6 +11,8 @@ type ReorgResult struct {
 	Peer              string `json:"peer,omitempty"`
 	LocalHeight       int    `json:"local_height"`
 	CandidateHeight   int    `json:"candidate_height"`
+	LocalWork         uint64 `json:"local_work"`
+	CandidateWork     uint64 `json:"candidate_work"`
 	BeforeHeadHash    string `json:"before_head_hash"`
 	CandidateHeadHash string `json:"candidate_head_hash"`
 	AfterHeight       int    `json:"after_height"`
@@ -76,6 +78,8 @@ func (n *Node) ResolveCandidateChain(peer string, candidate blockchain.State) (R
 		Peer:              normalizePeer(peer),
 		LocalHeight:       len(localBefore.Chain) - 1,
 		CandidateHeight:   candidateHeight,
+		LocalWork:         forkResult.LocalWork,
+		CandidateWork:     forkResult.CandidateWork,
 		BeforeHeadHash:    localHead.Hash,
 		CandidateHeadHash: candidateHeadHash,
 		Decision:          string(forkResult.Decision),
@@ -95,9 +99,27 @@ func (n *Node) ResolveCandidateChain(peer string, candidate blockchain.State) (R
 		if err := blockchain.SaveState(n.dataPath, n.state); err != nil {
 			return ReorgResult{}, err
 		}
-		n.logger.Printf("reorg adopted peer=%s local_height=%d candidate_height=%d new_head=%s kept_pending=%d dropped_pending=%d", result.Peer, result.LocalHeight, result.CandidateHeight, n.state.Chain[len(n.state.Chain)-1].Hash, result.KeptPending, result.DroppedPending)
+		n.logger.Printf(
+			"reorg adopted peer=%s local_height=%d candidate_height=%d local_work=%d candidate_work=%d new_head=%s kept_pending=%d dropped_pending=%d",
+			result.Peer,
+			result.LocalHeight,
+			result.CandidateHeight,
+			result.LocalWork,
+			result.CandidateWork,
+			n.state.Chain[len(n.state.Chain)-1].Hash,
+			result.KeptPending,
+			result.DroppedPending,
+		)
 	} else {
-		n.logger.Printf("reorg skipped peer=%s local_height=%d candidate_height=%d reason=%s", result.Peer, result.LocalHeight, result.CandidateHeight, result.Reason)
+		n.logger.Printf(
+			"reorg skipped peer=%s local_height=%d candidate_height=%d local_work=%d candidate_work=%d reason=%s",
+			result.Peer,
+			result.LocalHeight,
+			result.CandidateHeight,
+			result.LocalWork,
+			result.CandidateWork,
+			result.Reason,
+		)
 	}
 	afterHead := n.state.Chain[len(n.state.Chain)-1]
 	result.AfterHeight = len(n.state.Chain) - 1

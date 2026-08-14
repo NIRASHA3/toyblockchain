@@ -14,13 +14,15 @@ func TestResolveForkAdoptsLongerValidCandidate(t *testing.T) {
 	mineFaucetBlock(t, &local, cfg, "alice", 10)
 	mineFaucetBlock(t, &candidate, cfg, "bob", 10)
 	mineFaucetBlock(t, &candidate, cfg, "bob", 5)
-
 	resolved, result, err := ResolveFork(local, candidate, cfg)
 	if err != nil {
 		t.Fatalf("ResolveFork returned error: %v", err)
 	}
 	if !result.Adopted || result.Decision != ForkDecisionAdoptCandidate {
 		t.Fatalf("expected candidate adoption, got %+v", result)
+	}
+	if result.CandidateWork <= result.LocalWork {
+		t.Fatalf("expected candidate work to be greater than local work, result=%+v", result)
 	}
 	if got, want := len(resolved.Chain), len(candidate.Chain); got != want {
 		t.Fatalf("resolved chain length = %d, want %d", got, want)
@@ -29,14 +31,12 @@ func TestResolveForkAdoptsLongerValidCandidate(t *testing.T) {
 		t.Fatalf("resolved chain tip does not match candidate tip")
 	}
 }
-
-func TestResolveForkKeepsLocalWhenCandidateIsNotLonger(t *testing.T) {
+func TestResolveForkKeepsLocalWhenCandidateHasNoMoreWork(t *testing.T) {
 	cfg := Config{Difficulty: 1, MaxBlockTx: 5, RetargetInterval: 0}
 	local := NewState()
 	candidate := NewState()
 	mineFaucetBlock(t, &local, cfg, "alice", 10)
 	mineFaucetBlock(t, &candidate, cfg, "bob", 10)
-
 	resolved, result, err := ResolveFork(local, candidate, cfg)
 	if err != nil {
 		t.Fatalf("ResolveFork returned error: %v", err)
@@ -44,11 +44,64 @@ func TestResolveForkKeepsLocalWhenCandidateIsNotLonger(t *testing.T) {
 	if result.Adopted || result.Decision != ForkDecisionKeepLocal {
 		t.Fatalf("expected local chain to be kept, got %+v", result)
 	}
+	if result.CandidateWork != result.LocalWork {
+		t.Fatalf("expected equal work, result=%+v", result)
+	}
 	if resolved.Chain[len(resolved.Chain)-1].Hash != local.Chain[len(local.Chain)-1].Hash {
 		t.Fatalf("resolved chain tip changed unexpectedly")
 	}
 }
-
+func TestResolveForkAdoptsShorterCandidateWithMoreWork(t *testing.T) {
+	lowDifficulty := Config{Difficulty: 1, MaxBlockTx: 5, RetargetInterval: 0}
+	highDifficulty := Config{Difficulty: 3, MaxBlockTx: 5, RetargetInterval: 0}
+	local := NewState()
+	candidate := NewState()
+	mineFaucetBlock(t, &local, lowDifficulty, "alice", 10)
+	mineFaucetBlock(t, &local, lowDifficulty, "alice", 10)
+	mineFaucetBlock(t, &local, lowDifficulty, "alice", 10)
+	mineFaucetBlock(t, &candidate, highDifficulty, "bob", 10)
+	resolved, result, err := ResolveFork(local, candidate, lowDifficulty)
+	if err != nil {
+		t.Fatalf("ResolveFork returned error: %v", err)
+	}
+	if !result.Adopted || result.Decision != ForkDecisionAdoptCandidate {
+		t.Fatalf("expected heavier shorter candidate to be adopted, got %+v", result)
+	}
+	if result.CandidateHeight >= result.LocalHeight {
+		t.Fatalf("test setup failed: candidate should be shorter than local, result=%+v", result)
+	}
+	if result.CandidateWork <= result.LocalWork {
+		t.Fatalf("expected candidate work to be greater than local work, result=%+v", result)
+	}
+	if resolved.Chain[len(resolved.Chain)-1].Hash != candidate.Chain[len(candidate.Chain)-1].Hash {
+		t.Fatalf("resolved chain tip does not match heavier candidate tip")
+	}
+}
+func TestResolveForkKeepsShorterLocalChainWithMoreWork(t *testing.T) {
+	lowDifficulty := Config{Difficulty: 1, MaxBlockTx: 5, RetargetInterval: 0}
+	highDifficulty := Config{Difficulty: 3, MaxBlockTx: 5, RetargetInterval: 0}
+	local := NewState()
+	candidate := NewState()
+	mineFaucetBlock(t, &local, highDifficulty, "alice", 10)
+	mineFaucetBlock(t, &candidate, lowDifficulty, "bob", 10)
+	mineFaucetBlock(t, &candidate, lowDifficulty, "bob", 10)
+	resolved, result, err := ResolveFork(local, candidate, lowDifficulty)
+	if err != nil {
+		t.Fatalf("ResolveFork returned error: %v", err)
+	}
+	if result.Adopted || result.Decision != ForkDecisionKeepLocal {
+		t.Fatalf("expected heavier local chain to be kept, got %+v", result)
+	}
+	if result.CandidateHeight <= result.LocalHeight {
+		t.Fatalf("test setup failed: candidate should be longer than local, result=%+v", result)
+	}
+	if result.LocalWork <= result.CandidateWork {
+		t.Fatalf("expected local work to be greater than candidate work, result=%+v", result)
+	}
+	if resolved.Chain[len(resolved.Chain)-1].Hash != local.Chain[len(local.Chain)-1].Hash {
+		t.Fatalf("resolved chain tip changed unexpectedly")
+	}
+}
 func TestResolveForkRejectsInvalidCandidate(t *testing.T) {
 	cfg := Config{Difficulty: 1, MaxBlockTx: 5, RetargetInterval: 0}
 	local := NewState()
@@ -56,7 +109,6 @@ func TestResolveForkRejectsInvalidCandidate(t *testing.T) {
 	mineFaucetBlock(t, &candidate, cfg, "bob", 10)
 	mineFaucetBlock(t, &candidate, cfg, "bob", 5)
 	candidate.Chain[1].Transactions[0].Amount = 999
-
 	_, _, err := ResolveFork(local, candidate, cfg)
 	if err == nil {
 		t.Fatalf("expected invalid candidate to be rejected")
@@ -65,7 +117,6 @@ func TestResolveForkRejectsInvalidCandidate(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
-
 func TestResolveForkFiltersConflictingPendingTransactions(t *testing.T) {
 	cfg := Config{Difficulty: 1, MaxBlockTx: 5, RetargetInterval: 0}
 	wallet, err := NewWallet()
@@ -74,7 +125,6 @@ func TestResolveForkFiltersConflictingPendingTransactions(t *testing.T) {
 	}
 	local := NewState()
 	candidate := NewState()
-
 	mineFaucetBlock(t, &local, cfg, wallet.Address, 10)
 	mineFaucetBlock(t, &candidate, cfg, wallet.Address, 10)
 	localTx, err := NewSignedTransfer(wallet, "local-recipient", 3, 1, "local pending", time.Unix(10, 0))
@@ -84,7 +134,6 @@ func TestResolveForkFiltersConflictingPendingTransactions(t *testing.T) {
 	if err := local.AddPending(localTx); err != nil {
 		t.Fatalf("AddPending local: %v", err)
 	}
-
 	confirmedTx, err := NewSignedTransfer(wallet, "candidate-recipient", 4, 1, "candidate confirmed", time.Unix(11, 0))
 	if err != nil {
 		t.Fatalf("NewSignedTransfer candidate: %v", err)
@@ -93,7 +142,6 @@ func TestResolveForkFiltersConflictingPendingTransactions(t *testing.T) {
 		t.Fatalf("AddPending candidate: %v", err)
 	}
 	minePendingAt(t, &candidate, cfg, time.Unix(12, 0))
-
 	resolved, result, err := ResolveFork(local, candidate, cfg)
 	if err != nil {
 		t.Fatalf("ResolveFork returned error: %v", err)
@@ -105,7 +153,18 @@ func TestResolveForkFiltersConflictingPendingTransactions(t *testing.T) {
 		t.Fatalf("expected conflicting local pending tx to be dropped, result=%+v pending=%d", result, len(resolved.Pending))
 	}
 }
-
+func TestCumulativeChainWorkUsesDifficulty(t *testing.T) {
+	chain := []Block{
+		{Difficulty: 1},
+		{Difficulty: 2},
+		{Difficulty: 3},
+	}
+	got := CumulativeChainWork(chain)
+	want := uint64(16 + 256 + 4096)
+	if got != want {
+		t.Fatalf("CumulativeChainWork = %d, want %d", got, want)
+	}
+}
 func mineFaucetBlock(t *testing.T, state *State, cfg Config, to string, amount int64) {
 	t.Helper()
 	tx, err := NewFaucet(to, amount, "test funding", time.Unix(int64(len(state.Chain)), 0))
@@ -117,7 +176,6 @@ func mineFaucetBlock(t *testing.T, state *State, cfg Config, to string, amount i
 	}
 	minePendingAt(t, state, cfg, time.Unix(int64(len(state.Chain)), 0))
 }
-
 func minePendingAt(t *testing.T, state *State, cfg Config, now time.Time) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
