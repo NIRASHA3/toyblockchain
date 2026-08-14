@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -20,6 +21,7 @@ func cmdNode(args []string, cfg cliConfig, bcfg blockchain.Config, stdout, stder
 
 	addr := fs.String("addr", "127.0.0.1:8081", "networked node HTTP listen address")
 	peersRaw := fs.String("peers", "", "comma-separated peer base URLs, for example http://127.0.0.1:8082,http://127.0.0.1:8083")
+	discover := fs.Bool("discover", false, "discover additional peers from configured seed peers before serving")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -28,7 +30,6 @@ func cmdNode(args []string, cfg cliConfig, bcfg blockchain.Config, stdout, stder
 	logger := log.New(stderr, fmt.Sprintf("[node %s] ", *addr), log.LstdFlags)
 
 	selfURL := nodeBaseURL(*addr)
-
 	n, err := networknode.New(networknode.Config{
 		DataPath:    cfg.dataPath,
 		ChainConfig: bcfg,
@@ -40,6 +41,29 @@ func cmdNode(args []string, cfg cliConfig, bcfg blockchain.Config, stdout, stder
 		return err
 	}
 
+	if *discover {
+		discoveryCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		result, discoveryErr := n.DiscoverPeers(discoveryCtx)
+		cancel()
+
+		if discoveryErr != nil {
+			fmt.Fprintf(stderr, "peer discovery failed: %v\n", discoveryErr)
+		} else {
+			fmt.Fprintf(
+				stdout,
+				"peer discovery: before=%d after=%d contacted=%d added=%d\n",
+				result.BeforeCount,
+				result.AfterCount,
+				result.PeersContacted,
+				result.PeersAdded,
+			)
+		}
+
+		for _, discoveryErr := range result.Errors {
+			fmt.Fprintf(stderr, "peer discovery warning: %s\n", discoveryErr)
+		}
+	}
+
 	server := &http.Server{
 		Addr:              *addr,
 		Handler:           n.Handler(),
@@ -48,6 +72,7 @@ func cmdNode(args []string, cfg cliConfig, bcfg blockchain.Config, stdout, stder
 
 	fmt.Fprintf(stdout, "serving networked node on %s using state %s\n", *addr, cfg.dataPath)
 	fmt.Fprintf(stdout, "advertised node URL: %s\n", selfURL)
+
 	if peers := n.Peers(); len(peers) > 0 {
 		fmt.Fprintf(stdout, "configured peers: %s\n", strings.Join(peers, ", "))
 	} else {
@@ -74,6 +99,7 @@ func splitPeerList(raw string) []string {
 		if peer == "" {
 			continue
 		}
+
 		peers = append(peers, peer)
 	}
 

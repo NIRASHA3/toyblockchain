@@ -107,6 +107,7 @@ func (n *Node) Handler() http.Handler {
 	mux.HandleFunc("/resolve-fork", n.handleResolveFork)
 	mux.HandleFunc("/peer/status", n.handleStatus)
 	mux.HandleFunc("/peer/blocks/", n.handlePeerBlockByHeight)
+	mux.HandleFunc("/discover-peers", n.handleDiscoverPeers)
 	return mux
 }
 func (n *Node) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -133,6 +134,19 @@ func (n *Node) handlePeers(w http.ResponseWriter, r *http.Request) {
 		Count: len(peers),
 		Peers: peers,
 	})
+}
+func (n *Node) handleDiscoverPeers(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+
+	result, err := n.DiscoverPeers(r.Context())
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
 }
 func (n *Node) handleChain(w http.ResponseWriter, r *http.Request) {
 	if !requireMethod(w, r, http.MethodGet) {

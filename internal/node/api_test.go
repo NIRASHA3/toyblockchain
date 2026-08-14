@@ -24,7 +24,6 @@ func TestHandlerStatusAndPeers(t *testing.T) {
 
 	var status Status
 	getJSON(t, server.URL+"/status", &status)
-
 	if status.Height != 0 {
 		t.Fatalf("expected height 0, got %d", status.Height)
 	}
@@ -37,12 +36,62 @@ func TestHandlerStatusAndPeers(t *testing.T) {
 
 	var peers peersResponse
 	getJSON(t, server.URL+"/peers", &peers)
-
 	if peers.Count != 2 {
 		t.Fatalf("expected 2 peers, got %d", peers.Count)
 	}
 	if peers.Peers[0] != "http://127.0.0.1:8082" {
 		t.Fatalf("expected normalized first peer, got %q", peers.Peers[0])
+	}
+}
+
+func TestDiscoverPeersEndpointLearnsPeersFromSeed(t *testing.T) {
+	peerA := newPeerListTestServer(t, nil)
+	defer peerA.Close()
+
+	peerB := newPeerListTestServer(t, nil)
+	defer peerB.Close()
+
+	seedNode, err := New(testNodeConfig(t, peerA.URL, peerB.URL))
+	if err != nil {
+		t.Fatalf("new seed node: %v", err)
+	}
+
+	seedServer := httptest.NewServer(seedNode.Handler())
+	defer seedServer.Close()
+	seedNode.SetSelfURL(seedServer.URL)
+
+	joiningNode, err := New(testNodeConfig(t, seedServer.URL))
+	if err != nil {
+		t.Fatalf("new joining node: %v", err)
+	}
+
+	joiningServer := httptest.NewServer(joiningNode.Handler())
+	defer joiningServer.Close()
+	joiningNode.SetSelfURL(joiningServer.URL)
+
+	var result DiscoveryResult
+	postJSON(t, joiningServer.URL+"/discover-peers", nil, http.StatusOK, &result)
+
+	if result.BeforeCount != 1 {
+		t.Fatalf("expected one seed peer before discovery, got %d", result.BeforeCount)
+	}
+	if result.PeersAdded != 2 {
+		t.Fatalf("expected two discovered peers, got %d", result.PeersAdded)
+	}
+	if result.AfterCount != 3 {
+		t.Fatalf("expected three peers after discovery, got %d", result.AfterCount)
+	}
+
+	peers := joiningNode.Peers()
+
+	if !containsString(peers, seedServer.URL) {
+		t.Fatalf("expected joining node to keep seed peer %s, peers=%v", seedServer.URL, peers)
+	}
+	if !containsString(peers, peerA.URL) {
+		t.Fatalf("expected joining node to discover peer A %s, peers=%v", peerA.URL, peers)
+	}
+	if !containsString(peers, peerB.URL) {
+		t.Fatalf("expected joining node to discover peer B %s, peers=%v", peerB.URL, peers)
 	}
 }
 
@@ -57,7 +106,6 @@ func TestHandlerChainBlocksPendingAndValidate(t *testing.T) {
 
 	var chain chainResponse
 	getJSON(t, server.URL+"/chain", &chain)
-
 	if chain.Height != 0 {
 		t.Fatalf("expected chain height 0, got %d", chain.Height)
 	}
@@ -91,7 +139,6 @@ func TestHandlerChainBlocksPendingAndValidate(t *testing.T) {
 
 	var validation validateResponse
 	getJSON(t, server.URL+"/validate", &validation)
-
 	if !validation.Valid {
 		t.Fatalf("expected valid chain, got error %q", validation.Error)
 	}
@@ -110,7 +157,6 @@ func TestHandlerBalancesIncludingPending(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new faucet transaction: %v", err)
 	}
-
 	if _, err := n.AddTransaction(tx); err != nil {
 		t.Fatalf("add transaction: %v", err)
 	}
@@ -164,6 +210,7 @@ func TestTransactionEndpointGossipsToPeerAndDeduplicates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new alice wallet: %v", err)
 	}
+
 	bob, err := blockchain.NewWallet()
 	if err != nil {
 		t.Fatalf("new bob wallet: %v", err)
@@ -173,6 +220,7 @@ func TestTransactionEndpointGossipsToPeerAndDeduplicates(t *testing.T) {
 
 	serverA := httptest.NewServer(nodeA.Handler())
 	defer serverA.Close()
+
 	serverB := httptest.NewServer(nodeB.Handler())
 	defer serverB.Close()
 
@@ -222,6 +270,7 @@ func TestTransactionEndpointRejectsInvalidSignature(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new alice wallet: %v", err)
 	}
+
 	bob, err := blockchain.NewWallet()
 	if err != nil {
 		t.Fatalf("new bob wallet: %v", err)
@@ -231,6 +280,7 @@ func TestTransactionEndpointRejectsInvalidSignature(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new node: %v", err)
 	}
+
 	fundWallet(t, n, alice.Address)
 
 	server := httptest.NewServer(n.Handler())
@@ -260,6 +310,7 @@ func TestPeerTransactionEndpointAcceptsAndDoesNotForwardToOrigin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new alice wallet: %v", err)
 	}
+
 	bob, err := blockchain.NewWallet()
 	if err != nil {
 		t.Fatalf("new bob wallet: %v", err)
@@ -274,6 +325,7 @@ func TestPeerTransactionEndpointAcceptsAndDoesNotForwardToOrigin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new node: %v", err)
 	}
+
 	fundWallet(t, n, alice.Address)
 
 	server := httptest.NewServer(n.Handler())
@@ -306,6 +358,7 @@ func TestMineEndpointGossipsBlockToPeerAndClearsPending(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new alice wallet: %v", err)
 	}
+
 	bob, err := blockchain.NewWallet()
 	if err != nil {
 		t.Fatalf("new bob wallet: %v", err)
@@ -315,6 +368,7 @@ func TestMineEndpointGossipsBlockToPeerAndClearsPending(t *testing.T) {
 
 	serverA := httptest.NewServer(nodeA.Handler())
 	defer serverA.Close()
+
 	serverB := httptest.NewServer(nodeB.Handler())
 	defer serverB.Close()
 
@@ -334,6 +388,7 @@ func TestMineEndpointGossipsBlockToPeerAndClearsPending(t *testing.T) {
 
 	var before pendingResponse
 	getJSON(t, serverB.URL+"/pending", &before)
+
 	if before.Count != 1 {
 		t.Fatalf("expected node B pending count 1 before mining, got %d", before.Count)
 	}
@@ -350,6 +405,7 @@ func TestMineEndpointGossipsBlockToPeerAndClearsPending(t *testing.T) {
 
 	var statusA Status
 	getJSON(t, serverA.URL+"/status", &statusA)
+
 	if statusA.Height != 2 {
 		t.Fatalf("expected node A height 2, got %d", statusA.Height)
 	}
@@ -359,6 +415,7 @@ func TestMineEndpointGossipsBlockToPeerAndClearsPending(t *testing.T) {
 
 	var statusB Status
 	getJSON(t, serverB.URL+"/status", &statusB)
+
 	if statusB.Height != 2 {
 		t.Fatalf("expected node B height 2 after block gossip, got %d", statusB.Height)
 	}
@@ -460,6 +517,32 @@ func fundWallet(t *testing.T, n *Node, address string) {
 	}
 }
 
+func newPeerListTestServer(t *testing.T, peers []string) *httptest.Server {
+	t.Helper()
+
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/peers" {
+			http.NotFound(w, r)
+			return
+		}
+
+		writeJSON(w, http.StatusOK, peersResponse{
+			Count: len(peers),
+			Peers: peers,
+		})
+	}))
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+
+	return false
+}
+
 func getJSON(t *testing.T, url string, target any) {
 	t.Helper()
 
@@ -489,6 +572,7 @@ func postJSON(t *testing.T, url string, body any, expectedStatus int, target any
 		if err != nil {
 			t.Fatalf("marshal request body: %v", err)
 		}
+
 		reader = bytes.NewReader(data)
 	}
 
