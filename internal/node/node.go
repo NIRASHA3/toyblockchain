@@ -143,11 +143,18 @@ func (n *Node) AddPeer(peer string) bool {
 	if normalized == "" {
 		return false
 	}
+
 	n.mu.Lock()
 	defer n.mu.Unlock()
+
+	if n.selfURL != "" && normalized == n.selfURL {
+		return false
+	}
+
 	if _, exists := n.peers[normalized]; exists {
 		return false
 	}
+
 	n.peers[normalized] = struct{}{}
 	return true
 }
