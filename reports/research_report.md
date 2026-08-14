@@ -1,12 +1,12 @@
 ﻿# Research Report: Toy Blockchain and Ledger Simulator
 ## 1. Project scope and problem analysis
 This project implements a local command-line blockchain and ledger simulator in pure Go. The system demonstrates how blockchain data structures, proof-of-work mining, signed transactions, Merkle-root-based transaction commitment, ledger replay, tamper detection, difficulty retargeting, HTTP APIs, peer communication, gossip propagation, chain synchronisation, and fork resolution work together inside a small blockchain network.
-The implementation runs without third-party blockchain frameworks. Each node stores its own JSON state file and exposes an HTTP interface. In networked mode, multiple local node processes are started on different ports and connected through configured peer URLs. This allows transactions and blocks to propagate between nodes, allows lagging nodes to synchronise from peers, and allows nodes to resolve forks by adopting a longer valid chain.
+The implementation runs without third-party blockchain frameworks. Each node stores its own JSON state file and exposes an HTTP interface. In networked mode, multiple local node processes are started on different ports and connected through configured peer URLs. This allows transactions and blocks to propagate between nodes, allows lagging nodes to synchronise from peers, and allows nodes to resolve forks by adopting a heavier valid chain with more cumulative proof-of-work.
 The main problem addressed by this project is how a blockchain node can maintain a consistent local view of the ledger while receiving transactions, mined blocks, and competing chain data from other nodes. The implementation focuses on correctness and observability rather than production-level scalability. Each critical state transition is validated by replaying the chain and checking block structure, proof-of-work, Merkle roots, digital signatures, sender nonces, duplicate transaction IDs, and account balances.
 ## 2. Research background
-### 2.1 Proof-of-work and longest-chain reasoning
-Nakamoto's Bitcoin design introduced a peer-to-peer electronic cash system based on proof-of-work, block linking, and a longest proof-of-work chain rule. The key security idea is that rewriting past history requires redoing the proof-of-work for the changed block and then catching up with the honest network. This project follows the same educational principle in simplified form: a block is accepted only if its hash satisfies the configured proof-of-work target, and a competing chain is adopted only if it is valid and longer than the local chain.
-The simulator uses block count as its fork-choice metric rather than cumulative work. This is simpler for demonstration and easier to test, but it is less accurate than a production proof-of-work system where the chain with the most accumulated work is normally preferred.
+### 2.1 Proof-of-work and heaviest-chain reasoning
+Nakamoto's Bitcoin design introduced a peer-to-peer electronic cash system based on proof-of-work, block linking, and a longest proof-of-work chain rule. The key security idea is that rewriting past history requires redoing the proof-of-work for the changed block and then catching up with the honest network. This project follows the same educational principle in simplified form: a block is accepted only if its hash satisfies the configured proof-of-work target, and a competing chain is adopted only if it is valid and has more cumulative proof-of-work than the local chain.
+The simulator estimates each block's work from its difficulty. Since difficulty is measured using leading zero hexadecimal digits, each additional difficulty level represents about 16 times more expected mining work. Therefore, cumulative chain work is calculated as the sum of `16^difficulty` for the blocks in the chain. This improves the earlier longer-chain rule because a shorter chain with higher difficulty can correctly outweigh a longer chain with lower difficulty.
 ### 2.2 Gossip propagation and temporary forks
 Blockchain networks rely on propagation of transactions and blocks between peers. Research on Bitcoin propagation shows that network delay can cause nodes to temporarily observe different heads. When two valid blocks are mined close together, different peers may accept different blocks first, causing a temporary fork. A fork-choice rule is then required so nodes can eventually converge when one branch becomes preferable.
 This simulator reproduces the same concept locally. A node broadcasts valid transactions and mined blocks to configured peers. If a peer receives a block that directly extends its current head, it validates and appends it. If the block does not extend the local head, the peer treats it as fork evidence and can download the peer chain for fork resolution.
@@ -37,7 +37,7 @@ The main blockchain types are:
 - `State`: confirmed chain plus pending transaction pool.
 - `LedgerState`: replayed balances, sender nonces, and seen transaction IDs.
 - `MerkleProofStep`: sibling hash and left/right position used for Merkle proof verification.
-- `ForkResolutionResult`: result of comparing a local state with a competing candidate state.
+- `ForkResolutionResult`: result of comparing a local state with a competing candidate state, including local and candidate cumulative work.
 The main networked node types are:
 - `Node`: concurrency-safe wrapper around local blockchain state.
 - `Status`: current height, head hash, pending transaction count, and peer count.
@@ -186,7 +186,7 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8091/resolve-fork -Body '{"
 ```
 The node adopts the candidate only when:
 - the candidate chain is valid,
-- the candidate chain is longer than the local chain.
+- the candidate chain has more cumulative proof-of-work than the local chain.
 During reorganisation, transactions confirmed in replaced local blocks but absent from the adopted chain are treated as orphaned transactions. The node revalidates those orphaned transactions on top of the adopted chain. Valid orphaned transactions return to the pending pool, while invalid or conflicting transactions are dropped.
 The fork experiment created two branches from a common funded chain. Node A had height `2`, while node B had height `3`. Before resolution, the nodes had different head hashes. After node A resolved against node B, the response showed:
 ```text
@@ -194,11 +194,13 @@ decision = adopt_candidate
 adopted = True
 local_height = 2
 candidate_height = 3
+local_work = 1048608
+candidate_work = 1048624
 after_height = 3
 kept_pending = 1
 dropped_pending = 0
 ```
-After reorganisation, node A and node B had the same height and head hash. Node A also had one pending transaction, showing that the transaction from the replaced local branch was correctly returned to the pending pool.
+After reorganisation, node A and node B had the same height and head hash. Node A also had one pending transaction, showing that the transaction from the replaced local branch was correctly returned to the pending pool. The response also exposed local and candidate cumulative work values, making the fork-choice decision easier to inspect.
 ## 16. Local cluster launcher
 The local cluster launcher starts three connected node processes for demonstration:
 ```powershell
@@ -235,18 +237,19 @@ The tests passed for:
 - transaction gossip,
 - block gossip,
 - chain synchronisation,
-- fork reorganisation,
+- fork reorganisation using cumulative proof-of-work,
 - race detector execution.
 The race detector result is important because the networked node can receive concurrent HTTP requests while also mining, gossiping, syncing, or reorganising. The mutex-protected `Node` wrapper is therefore a necessary design choice rather than an optional improvement.
 ## 18. Discussion
 ### 18.1 Finality
-The simulator uses a simplified longest-valid-chain rule. This means finality is probabilistic rather than absolute. A transaction confirmed in a block can still be reorganised out if a longer valid competing chain appears. In practice, blockchain users wait for additional confirmations because each new block on top of a transaction makes replacement less likely.
+The simulator uses a heaviest-valid-chain rule based on cumulative proof-of-work. This means finality is probabilistic rather than absolute. A transaction confirmed in a block can still be reorganised out if a valid competing chain with more cumulative work appears. In practice, blockchain users wait for additional confirmations because each new block on top of a transaction makes replacement less likely.
 ### 18.2 51% attack discussion
-In a proof-of-work network, an attacker with majority mining power can attempt to create a longer alternative chain. This can allow double-spending or reversal of recent transactions. This simulator does not model real mining economics or network-wide hash power, but its fork experiment demonstrates the structural idea: if a longer valid chain is presented, the node may adopt it and move transactions from the replaced branch back into pending.
+In a proof-of-work network, an attacker with majority mining power can attempt to create a longer alternative chain. This can allow double-spending or reversal of recent transactions. This simulator does not model real mining economics or network-wide hash power, but its fork experiment demonstrates the structural idea: if a valid chain with more cumulative proof-of-work is presented, the node may adopt it and move transactions from the replaced branch back into pending.
 ### 18.3 Malicious peer behaviour
 Digital signatures prevent a peer from forging transfers from another user's wallet. Merkle roots and block hashes prevent silent transaction tampering. Full-chain validation prevents a node from adopting a structurally invalid chain. However, malicious peers could still attempt denial-of-service behaviour by sending repeated invalid blocks, large requests, stale blocks, or conflicting data. Production systems would need peer scoring, rate limiting, banning, stronger authentication, and more careful resource controls.
-### 18.4 Longest chain versus cumulative work
-The simulator adopts a longer valid chain by block height. This is simple and understandable, but it is not the strongest production rule. A more accurate proof-of-work fork-choice rule would compare cumulative work so that a shorter chain with higher difficulty could potentially outweigh a longer low-difficulty chain. This is a future improvement.
+### 18.4 Cumulative work fork choice
+The simulator now uses cumulative proof-of-work as the fork-choice metric. This is more realistic than comparing block count alone because difficulty affects how much mining effort a block represents. In this project, a block's estimated work is calculated as `16^difficulty`, and the cumulative work of a chain is the sum of the work of its blocks.
+This means a longer chain is not automatically selected. A candidate chain is adopted only when it is valid and has more cumulative work than the local chain. This improves the earlier longer-chain rule and demonstrates the Assignment 2 stretch goal called heaviest chain.
 ## 19. Constraints and future improvements
 This implementation is suitable for local blockchain learning and assessment demonstrations. It is not production cryptocurrency software.
 Current constraints:
@@ -255,7 +258,6 @@ Current constraints:
 - no automatic peer discovery,
 - no NAT traversal,
 - no public network deployment,
-- fork choice is based on block count rather than cumulative work,
 - no transaction fees,
 - no mining rewards,
 - no smart contracts,
@@ -267,16 +269,15 @@ Future improvements:
 1. Add automatic peer discovery.
 2. Add periodic peer health checks.
 3. Add automatic background synchronisation.
-4. Replace block-count fork choice with cumulative-work fork choice.
-5. Add transaction fees and mining rewards.
-6. Add persistent mempool storage.
-7. Add peer banning for repeated invalid data.
-8. Add Docker Compose support for easier cluster demonstrations.
-9. Add stronger API authentication and rate limiting.
-10. Add a smart contract execution layer as a separate extension.
+4. Add transaction fees and mining rewards.
+5. Add persistent mempool storage.
+6. Add peer banning for repeated invalid data.
+7. Add Docker Compose support for easier cluster demonstrations.
+8. Add stronger API authentication and rate limiting.
+9. Add a smart contract execution layer as a separate extension.
 ## 20. Conclusion
 The project successfully demonstrates the main internal mechanisms of a blockchain node and extends them into a small local network. The blockchain core provides deterministic hashing, proof-of-work, Merkle-root validation, signed transactions, replay protection, ledger replay, tamper detection, and difficulty retargeting. The networked node layer adds transaction gossip, block gossip, chain synchronisation, fork resolution, reorganisation, orphaned transaction handling, and race-safe shared state.
-The experiments show that a transaction submitted to one node propagates to peers, duplicate transactions are not re-gossiped, mined blocks propagate and clear pending pools, lagging nodes can synchronise from peers, and a node can converge to a longer valid peer chain while returning valid orphaned transactions to pending. Overall, the simulator provides a clear and testable model of blockchain behaviour while keeping the implementation small enough to understand and verify.
+The experiments show that a transaction submitted to one node propagates to peers, duplicate transactions are not re-gossiped, mined blocks propagate and clear pending pools, lagging nodes can synchronise from peers, and a node can converge to a heavier valid peer chain while returning valid orphaned transactions to pending. Overall, the simulator provides a clear and testable model of blockchain behaviour while keeping the implementation small enough to understand and verify.
 ## References
 - Nakamoto, S. (2008). *Bitcoin: A Peer-to-Peer Electronic Cash System*. https://bitcoin.org/bitcoin.pdf
 - Decker, C., & Wattenhofer, R. (2013). *Information Propagation in the Bitcoin Network*. IEEE P2P 2013.

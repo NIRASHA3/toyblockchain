@@ -2,7 +2,7 @@
 
 A pure Go toy blockchain and ledger simulator developed for coursework. The project started as a single-node proof-of-work blockchain and was extended into a small local network of independent nodes for Assignment 2.
 
-The implementation demonstrates blockchain fundamentals such as blocks, hashes, proof-of-work, signed transactions, wallet-based transfers, Merkle roots, ledger replay, REST APIs, transaction gossip, block gossip, chain synchronisation, fork resolution, and race-free shared state.
+The implementation demonstrates blockchain fundamentals such as blocks, hashes, proof-of-work, signed transactions, wallet-based transfers, Merkle roots, ledger replay, REST APIs, transaction gossip, block gossip, chain synchronisation, cumulative-work fork resolution, and race-free shared state.
 
 ---
 
@@ -20,7 +20,7 @@ The implementation demonstrates blockchain fundamentals such as blocks, hashes, 
 - Account-based balances
 - Pending transaction pool
 - Tamper detection
-- Fork resolution using a longer-valid-chain rule
+- Fork resolution using a cumulative proof-of-work / heaviest-valid-chain rule
 
 ### Wallet and Transaction Features
 
@@ -54,7 +54,7 @@ The implementation demonstrates blockchain fundamentals such as blocks, hashes, 
 - Transaction gossip with deduplication
 - Block gossip with deduplication
 - Chain synchronisation for new or lagging nodes
-- Network fork resolution and reorganisation
+- Network fork resolution and reorganisation using cumulative proof-of-work
 - Orphaned transaction return to pending pool after reorg
 - Race-safe node state using mutex protection
 - Three-node PowerShell cluster launcher
@@ -258,7 +258,7 @@ merkle-proof -height N -tx I                print a transaction Merkle proof
 serve [-addr 127.0.0.1:8080] [-api-token TOKEN]
                                            start single-node REST API server
 node -addr 127.0.0.1:8081 -peers URLS       start networked node HTTP service
-resolve-fork -candidate FILE [-dry-run]     compare with a competing state and adopt it if longer and valid
+resolve-fork -candidate FILE [-dry-run]     compare with a competing state and adopt it if it has more cumulative work and is valid
 tamper -height N -tx I -amount N            deliberately alter stored data for demo
 ```
 
@@ -494,7 +494,7 @@ Invoke-RestMethod http://127.0.0.1:8081/chain
 | `POST` | `/transactions` | Submit a signed transaction and gossip it |
 | `POST` | `/mine` | Mine pending transactions and gossip the new block |
 | `POST` | `/sync` | Download missing blocks from a peer |
-| `POST` | `/resolve-fork` | Download and adopt a longer valid peer chain |
+| `POST` | `/resolve-fork` | Download and adopt a heavier valid peer chain |
 | `POST` | `/peer/transactions` | Peer-to-peer transaction gossip endpoint |
 | `POST` | `/peer/blocks` | Peer-to-peer block gossip endpoint |
 | `GET` | `/peer/status` | Peer status endpoint used by sync and reorg |
@@ -609,7 +609,9 @@ If a node receives a competing block that does not directly extend its local hea
 The node adopts the candidate chain only if:
 
 - the candidate chain is valid,
-- the candidate chain is longer than the local chain.
+- the candidate chain has more cumulative proof-of-work than the local chain.
+
+Cumulative work is calculated from block difficulty. In this toy proof-of-work system, each leading hexadecimal zero represents about 16 times more expected mining work, so a block's estimated work is calculated as `16^difficulty`.
 
 During reorganisation:
 
@@ -629,6 +631,8 @@ Important response fields:
 ```text
 local_height
 candidate_height
+local_work
+candidate_work
 before_head_hash
 candidate_head_hash
 after_height
@@ -645,7 +649,7 @@ Example successful result:
 ```text
 decision = adopt_candidate
 adopted = True
-reason = candidate chain is longer and valid
+reason = candidate chain has more cumulative proof-of-work and is valid
 kept_pending = 1
 dropped_pending = 0
 ```
@@ -739,7 +743,7 @@ Each node tracks seen transaction IDs and seen block hashes. This prevents repea
 
 ### Fork Choice
 
-The implemented fork-choice rule adopts a candidate chain only when it is valid and longer than the local chain. Equal-length or shorter chains are not adopted.
+The implemented fork-choice rule uses cumulative proof-of-work instead of simple block count. A candidate chain is adopted only when it is valid and has more cumulative work than the local chain. This is closer to real proof-of-work blockchain behaviour because a shorter chain with higher difficulty can outweigh a longer low-difficulty chain.
 
 ---
 
@@ -757,8 +761,8 @@ The networked implementation covers the main Assignment 2 requirements:
 | Block gossip | `/mine` and `/peer/blocks` |
 | Block validation before append | `AcceptBlock` and chain validation |
 | Chain sync | `/sync`, `/peer/status`, `/peer/blocks/{height}` |
-| Fork resolution | `/resolve-fork` and `ResolveForkFromPeer` |
-| Reorganisation | adoption of longer valid peer chain |
+| Fork resolution | `/resolve-fork` and `ResolveForkFromPeer` using cumulative work |
+| Reorganisation | adoption of heavier valid peer chain |
 | Orphan transaction handling | valid orphaned transactions return to pending |
 | Race-free state | mutex-protected `Node` wrapper |
 | Introspection API | `/status`, `/peers`, `/pending`, `/balances`, `/chain` |
@@ -783,7 +787,6 @@ Current constraints:
 - no smart contracts,
 - no EVM,
 - no real economic finality,
-- no cumulative-work fork choice,
 - no persistent peer database,
 - no automatic background sync loop,
 - no advanced mempool prioritisation.
@@ -793,7 +796,6 @@ Possible future improvements:
 - automatic peer discovery,
 - periodic peer health checks,
 - automatic background sync,
-- cumulative-work fork choice,
 - transaction fees,
 - block rewards,
 - persistent mempool,
