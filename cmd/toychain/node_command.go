@@ -20,6 +20,7 @@ func cmdNode(args []string, cfg cliConfig, bcfg blockchain.Config, stdout, stder
 	fs.SetOutput(stderr)
 
 	addr := fs.String("addr", "127.0.0.1:8081", "networked node HTTP listen address")
+	advertise := fs.String("advertise", "", "peer-visible node base URL, for example http://node1:8081")
 	peersRaw := fs.String("peers", "", "comma-separated peer base URLs, for example http://127.0.0.1:8082,http://127.0.0.1:8083")
 	discover := fs.Bool("discover", false, "discover additional peers from configured seed peers before serving")
 
@@ -29,7 +30,7 @@ func cmdNode(args []string, cfg cliConfig, bcfg blockchain.Config, stdout, stder
 
 	logger := log.New(stderr, fmt.Sprintf("[node %s] ", *addr), log.LstdFlags)
 
-	selfURL := nodeBaseURL(*addr)
+	selfURL := advertisedNodeURL(*addr, *advertise)
 	n, err := networknode.New(networknode.Config{
 		DataPath:    cfg.dataPath,
 		ChainConfig: bcfg,
@@ -104,6 +105,15 @@ func splitPeerList(raw string) []string {
 	}
 
 	return peers
+}
+
+func advertisedNodeURL(addr string, advertise string) string {
+	advertise = strings.TrimSpace(advertise)
+	if advertise != "" {
+		return nodeBaseURL(advertise)
+	}
+
+	return nodeBaseURL(addr)
 }
 
 func nodeBaseURL(addr string) string {
