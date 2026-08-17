@@ -2,7 +2,7 @@
 
 A pure Go toy blockchain and ledger simulator developed for coursework. The project started as a single-node proof-of-work blockchain and was extended into a small local network of independent nodes for Assignment 2.
 
-The implementation demonstrates blockchain fundamentals such as blocks, hashes, proof-of-work, signed transactions, wallet-based transfers, Merkle roots, ledger replay, REST APIs, transaction gossip, block gossip, chain synchronisation, peer discovery, cumulative-work fork resolution, and race-free shared state.
+The implementation demonstrates blockchain fundamentals such as blocks, hashes, proof-of-work, signed transactions, wallet-based transfers, Merkle roots, ledger replay, REST APIs, transaction gossip, block gossip, chain synchronisation, peer discovery, cumulative-work fork resolution, Docker Compose cluster startup, and race-free shared state.
 
 ---
 
@@ -59,6 +59,7 @@ The implementation demonstrates blockchain fundamentals such as blocks, hashes, 
 - Orphaned transaction return to pending pool after reorg
 - Race-safe node state using mutex protection
 - Three-node PowerShell cluster launcher
+- Docker Compose cluster launcher for a three-node local network
 
 ---
 
@@ -93,6 +94,9 @@ toyblockchain/
 ├── scripts/
 │   ├── start-cluster.ps1
 │   └── stop-cluster.ps1
+├── .dockerignore
+├── Dockerfile
+├── docker-compose.yml
 ├── README.md
 └── go.mod
 ```
@@ -103,6 +107,7 @@ toyblockchain/
 
 - Go installed
 - PowerShell for the provided cluster scripts
+- Docker Desktop or Docker Engine with Compose support for the Docker Compose cluster
 - GCC/MSYS2 setup is required only when running the Go race detector on Windows
 
 For Windows race tests, use:
@@ -259,7 +264,7 @@ pending                                     list pending transactions
 merkle-proof -height N -tx I                print a transaction Merkle proof
 serve [-addr 127.0.0.1:8080] [-api-token TOKEN]
                                            start single-node REST API server
-node -addr 127.0.0.1:8081 -peers URLS [-discover]
+node -addr 127.0.0.1:8081 [-advertise URL] -peers URLS [-discover]
                                            start networked node HTTP service
 resolve-fork -candidate FILE [-dry-run]     compare with a competing state and adopt it if it has more cumulative work and is valid
 tamper -height N -tx I -amount N            deliberately alter stored data for demo
@@ -442,6 +447,8 @@ Start a joining node with one seed peer and discover the rest of the local netwo
 
 The `-discover` flag contacts the configured seed peer, reads its peer list, and adds newly discovered peer URLs to the joining node.
 
+The `-advertise` flag is useful when the address used for listening is different from the address that peers should use to contact the node. This is mainly needed in Docker Compose, where a node listens on `0.0.0.0:8081` inside the container but advertises a Docker service URL such as `http://node1:8081`.
+
 ---
 
 ## Local Three-Node Cluster
@@ -485,6 +492,64 @@ Invoke-RestMethod http://127.0.0.1:8081/peers
 Invoke-RestMethod http://127.0.0.1:8081/pending
 Invoke-RestMethod http://127.0.0.1:8081/chain
 ```
+
+---
+
+## Docker Compose Cluster
+
+The project also includes Docker Compose support for starting a three-node local blockchain network with one command. Each Compose service has its own persistent Docker volume and communicates with the other services using Docker service names.
+
+Start the Compose cluster:
+
+```powershell
+docker compose up --build -d
+```
+
+Check the nodes:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8081/health
+Invoke-RestMethod http://127.0.0.1:8082/health
+Invoke-RestMethod http://127.0.0.1:8083/health
+```
+
+Check node status:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8081/status
+Invoke-RestMethod http://127.0.0.1:8082/status
+Invoke-RestMethod http://127.0.0.1:8083/status
+```
+
+Check configured peers:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8081/peers
+Invoke-RestMethod http://127.0.0.1:8082/peers
+Invoke-RestMethod http://127.0.0.1:8083/peers
+```
+
+Expected result:
+
+```text
+node1 peer_count = 2
+node2 peer_count = 2
+node3 peer_count = 2
+```
+
+Stop the cluster:
+
+```powershell
+docker compose down
+```
+
+Stop and remove node volumes for a clean reset:
+
+```powershell
+docker compose down -v
+```
+
+The Compose cluster uses `Dockerfile`, `docker-compose.yml`, and `.dockerignore`. The node processes listen on `0.0.0.0` inside their containers while advertising Docker service-name URLs such as `http://node1:8081`, `http://node2:8082`, and `http://node3:8083`.
 
 ---
 
@@ -815,6 +880,7 @@ The networked implementation covers the main Assignment 2 requirements:
 | Race-free state | mutex-protected `Node` wrapper |
 | Introspection API | `/status`, `/peers`, `/pending`, `/balances`, `/chain` |
 | Local cluster launcher | `scripts/start-cluster.ps1` and `scripts/stop-cluster.ps1` |
+| Docker Compose cluster stretch goal | `Dockerfile`, `docker-compose.yml`, and `.dockerignore` |
 | Race detector testing | `go test -race ./...` |
 
 ---
@@ -846,7 +912,6 @@ Possible future improvements:
 - block rewards,
 - persistent mempool,
 - improved peer banning for invalid data,
-- Docker Compose cluster setup,
 - smart contract execution layer.
 
 ---
@@ -917,3 +982,32 @@ powershell -ExecutionPolicy Bypass -File .\scripts\stop-cluster.ps1 -Clean
 
 ---
 
+
+## Docker Compose Quick Demonstration Flow
+
+Start a clean Compose cluster:
+
+```powershell
+docker compose down -v
+docker compose up --build -d
+```
+
+Check health and peers:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8081/health
+Invoke-RestMethod http://127.0.0.1:8082/health
+Invoke-RestMethod http://127.0.0.1:8083/health
+
+Invoke-RestMethod http://127.0.0.1:8081/peers
+Invoke-RestMethod http://127.0.0.1:8082/peers
+Invoke-RestMethod http://127.0.0.1:8083/peers
+```
+
+Stop and clean the Compose cluster:
+
+```powershell
+docker compose down -v
+```
+
+---

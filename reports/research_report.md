@@ -1,7 +1,7 @@
 ﻿# Research Report: Toy Blockchain and Ledger Simulator
 ## 1. Project scope and problem analysis
-This project implements a local command-line blockchain and ledger simulator in pure Go. The system demonstrates how blockchain data structures, proof-of-work mining, signed transactions, Merkle-root-based transaction commitment, ledger replay, tamper detection, difficulty retargeting, HTTP APIs, peer communication, gossip propagation, chain synchronisation, peer discovery, and fork resolution work together inside a small blockchain network.
-The implementation runs without third-party blockchain frameworks. Each node stores its own JSON state file and exposes an HTTP interface. In networked mode, multiple local node processes are started on different ports and connected through configured peer URLs or discovered from seed peers. This allows transactions and blocks to propagate between nodes, allows a joining node to learn additional peers, allows lagging nodes to synchronise from peers, and allows nodes to resolve forks by adopting a heavier valid chain with more cumulative proof-of-work.
+This project implements a local command-line blockchain and ledger simulator in pure Go. The system demonstrates how blockchain data structures, proof-of-work mining, signed transactions, Merkle-root-based transaction commitment, ledger replay, tamper detection, difficulty retargeting, HTTP APIs, peer communication, gossip propagation, chain synchronisation, peer discovery, Docker Compose cluster startup, and fork resolution work together inside a small blockchain network.
+The implementation runs without third-party blockchain frameworks. Each node stores its own JSON state file and exposes an HTTP interface. In networked mode, multiple local node processes are started on different ports and connected through configured peer URLs or discovered from seed peers. The same three-node network can also be started using Docker Compose with one command. This allows transactions and blocks to propagate between nodes, allows a joining node to learn additional peers, allows lagging nodes to synchronise from peers, and allows nodes to resolve forks by adopting a heavier valid chain with more cumulative proof-of-work.
 The main problem addressed by this project is how a blockchain node can maintain a consistent local view of the ledger while receiving transactions, mined blocks, and competing chain data from other nodes. The implementation focuses on correctness and observability rather than production-level scalability. Each critical state transition is validated by replaying the chain and checking block structure, proof-of-work, Merkle roots, digital signatures, sender nonces, duplicate transaction IDs, and account balances.
 ## 2. Research background
 ### 2.1 Proof-of-work and heaviest-chain reasoning
@@ -28,7 +28,7 @@ internal/node
 The `cmd/toychain` package contains the command-line interface, the single-node REST API, and the networked node command. It parses global flags such as `-data`, `-difficulty`, `-retarget-interval`, and `-target-block-time`, then calls the appropriate blockchain or node operation.
 The `internal/blockchain` package contains the core blockchain domain logic. It defines blocks, transactions, wallets, Merkle roots, proof-of-work mining, validation, ledger replay, state persistence, difficulty retargeting, and local fork resolution.
 The `internal/node` package adds the networked node layer. It wraps the blockchain state with concurrency protection and exposes HTTP endpoints for status inspection, transaction gossip, block gossip, peer discovery, chain synchronisation, and network fork resolution.
-The `scripts` folder contains PowerShell scripts for starting and stopping a three-node local cluster.
+The `scripts` folder contains PowerShell scripts for starting and stopping a three-node local cluster. The project root also contains `Dockerfile`, `docker-compose.yml`, and `.dockerignore` for running the same type of three-node local network through Docker Compose.
 ## 4. Main data types
 The main blockchain types are:
 - `Wallet`: Ed25519 public/private key pair and derived address.
@@ -115,6 +115,8 @@ The node layer protects shared state with a mutex. Protected state includes:
 - seen block hashes,
 - local self URL.
 The HTTP handlers call methods on the `Node` type rather than directly mutating blockchain state. This keeps chain updates, pending-pool updates, gossip deduplication, peer discovery, synchronisation, and reorganisation safe under concurrent requests.
+
+The node command also supports an advertised URL. This separates the HTTP listen address from the peer-visible address. It is useful in Docker Compose because a node can listen on `0.0.0.0:8081` inside its container while advertising a service URL such as `http://node1:8081` to other containers.
 
 Peer discovery extends the static peer-list design without changing the local-only scope of the project. A node can start from one manually configured seed peer, call `/peers` on that seed, and add the returned peer URLs to its own peer set. The discovery process skips duplicates and the node's own URL, and it is bounded so one discovery run cannot expand without limit.
 ## 11. Network API and wire format
@@ -236,7 +238,53 @@ The stop script terminates the recorded node processes:
 powershell -ExecutionPolicy Bypass -File .\scripts\stop-cluster.ps1 -Clean
 ```
 This provides a repeatable local test environment for transaction gossip, block gossip, synchronisation, and fork resolution.
-## 18. Experimental verification
+## 18. Docker Compose cluster
+The Docker Compose cluster completes the Compose cluster stretch goal. The project includes a `Dockerfile` for building the Go binary inside a container and a `docker-compose.yml` file for starting three node services.
+
+The cluster is started with:
+```powershell
+docker compose up --build -d
+```
+
+The Compose file starts three services:
+```text
+node1 -> exposed on localhost:8081, advertised as http://node1:8081
+node2 -> exposed on localhost:8082, advertised as http://node2:8082
+node3 -> exposed on localhost:8083, advertised as http://node3:8083
+```
+
+Each container stores its blockchain state in a separate Docker volume. This keeps the node states independent while allowing them to communicate through Docker's internal service-name networking. The node command uses the `-advertise` flag so that the internal peer list contains service URLs such as `http://node2:8082` instead of host-only addresses.
+
+The Compose cluster was verified by checking the health, status, and peer endpoints:
+```powershell
+Invoke-RestMethod http://127.0.0.1:8081/health
+Invoke-RestMethod http://127.0.0.1:8082/health
+Invoke-RestMethod http://127.0.0.1:8083/health
+
+Invoke-RestMethod http://127.0.0.1:8081/status
+Invoke-RestMethod http://127.0.0.1:8082/status
+Invoke-RestMethod http://127.0.0.1:8083/status
+
+Invoke-RestMethod http://127.0.0.1:8081/peers
+Invoke-RestMethod http://127.0.0.1:8082/peers
+Invoke-RestMethod http://127.0.0.1:8083/peers
+```
+
+The observed result showed that all three nodes returned `health=ok`, each node was at height `0`, and each node had `peer_count=2`. This confirms that the Compose cluster starts the full local network with one command.
+
+The cluster can be stopped with:
+```powershell
+docker compose down
+```
+
+For a clean reset, the node volumes can be removed with:
+```powershell
+docker compose down -v
+```
+
+This feature improves reproducibility. Instead of opening several PowerShell windows manually, the whole network can be started from a clean checkout using Docker Compose.
+
+## 19. Experimental verification
 The final implementation was verified using:
 ```powershell
 go test ./...
@@ -257,22 +305,24 @@ The tests passed for:
 - block gossip,
 - chain synchronisation,
 - fork reorganisation using cumulative proof-of-work,
-- race detector execution.
+- race detector execution,
+- Docker Compose three-node cluster startup.
 The race detector result is important because the networked node can receive concurrent HTTP requests while also mining, gossiping, syncing, or reorganising. The mutex-protected `Node` wrapper is therefore a necessary design choice rather than an optional improvement.
-## 19. Discussion
-### 19.1 Finality
+## 20. Discussion
+### 20.1 Finality
 The simulator uses a heaviest-valid-chain rule based on cumulative proof-of-work. This means finality is probabilistic rather than absolute. A transaction confirmed in a block can still be reorganised out if a valid competing chain with more cumulative work appears. In practice, blockchain users wait for additional confirmations because each new block on top of a transaction makes replacement less likely.
-### 19.2 51% attack discussion
+### 20.2 51% attack discussion
 In a proof-of-work network, an attacker with majority mining power can attempt to create a longer alternative chain. This can allow double-spending or reversal of recent transactions. This simulator does not model real mining economics or network-wide hash power, but its fork experiment demonstrates the structural idea: if a valid chain with more cumulative proof-of-work is presented, the node may adopt it and move transactions from the replaced branch back into pending.
-### 19.3 Malicious peer behaviour
+### 20.3 Malicious peer behaviour
 Digital signatures prevent a peer from forging transfers from another user's wallet. Merkle roots and block hashes prevent silent transaction tampering. Full-chain validation prevents a node from adopting a structurally invalid chain. However, malicious peers could still attempt denial-of-service behaviour by sending repeated invalid blocks, large requests, stale blocks, misleading peer lists, or conflicting data. Production systems would need peer scoring, rate limiting, banning, stronger authentication, and more careful resource controls.
-### 19.4 Cumulative work fork choice
+### 20.4 Cumulative work fork choice
 The simulator now uses cumulative proof-of-work as the fork-choice metric. This is more realistic than comparing block count alone because difficulty affects how much mining effort a block represents. In this project, a block's estimated work is calculated as `16^difficulty`, and the cumulative work of a chain is the sum of the work of its blocks.
 This means a longer chain is not automatically selected. A candidate chain is adopted only when it is valid and has more cumulative work than the local chain. This improves the earlier longer-chain rule and demonstrates the Assignment 2 stretch goal called heaviest chain.
-## 20. Constraints and future improvements
+## 21. Constraints and future improvements
 This implementation is suitable for local blockchain learning and assessment demonstrations. It is not production cryptocurrency software.
 Current constraints:
 - peer networking is local HTTP-based and intended for localhost testing,
+- Docker Compose support is intended for local cluster demonstration only,
 - peer discovery requires at least one manually configured seed peer,
 - no NAT traversal,
 - no public network deployment,
@@ -289,12 +339,11 @@ Future improvements:
 3. Add transaction fees and mining rewards.
 4. Add persistent mempool storage.
 5. Add peer banning for repeated invalid data.
-6. Add Docker Compose support for easier cluster demonstrations.
-7. Add stronger API authentication and rate limiting.
-8. Add a smart contract execution layer as a separate extension.
-## 21. Conclusion
-The project successfully demonstrates the main internal mechanisms of a blockchain node and extends them into a small local network. The blockchain core provides deterministic hashing, proof-of-work, Merkle-root validation, signed transactions, replay protection, ledger replay, tamper detection, and difficulty retargeting. The networked node layer adds peer discovery, transaction gossip, block gossip, chain synchronisation, fork resolution, reorganisation, orphaned transaction handling, and race-safe shared state.
-The experiments show that a joining node can learn peers from a seed, a transaction submitted to one node propagates to peers, duplicate transactions are not re-gossiped, mined blocks propagate and clear pending pools, lagging nodes can synchronise from peers, and a node can converge to a heavier valid peer chain while returning valid orphaned transactions to pending. Overall, the simulator provides a clear and testable model of blockchain behaviour while keeping the implementation small enough to understand and verify.
+6. Add stronger API authentication and rate limiting.
+7. Add a smart contract execution layer as a separate extension.
+## 22. Conclusion
+The project successfully demonstrates the main internal mechanisms of a blockchain node and extends them into a small local network. The blockchain core provides deterministic hashing, proof-of-work, Merkle-root validation, signed transactions, replay protection, ledger replay, tamper detection, and difficulty retargeting. The networked node layer adds peer discovery, transaction gossip, block gossip, chain synchronisation, fork resolution, reorganisation, orphaned transaction handling, Docker Compose cluster startup, and race-safe shared state.
+The experiments show that a joining node can learn peers from a seed, a Docker Compose command can start the three-node network, a transaction submitted to one node propagates to peers, duplicate transactions are not re-gossiped, mined blocks propagate and clear pending pools, lagging nodes can synchronise from peers, and a node can converge to a heavier valid peer chain while returning valid orphaned transactions to pending. Overall, the simulator provides a clear and testable model of blockchain behaviour while keeping the implementation small enough to understand and verify.
 ## References
 - Nakamoto, S. (2008). *Bitcoin: A Peer-to-Peer Electronic Cash System*. https://bitcoin.org/bitcoin.pdf
 - Decker, C., & Wattenhofer, R. (2013). *Information Propagation in the Bitcoin Network*. IEEE P2P 2013.
