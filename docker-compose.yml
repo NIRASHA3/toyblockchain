@@ -1,0 +1,89 @@
+services:
+  node1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: toychain-node1
+    command:
+      - /bin/sh
+      - -c
+      - |
+        if [ ! -f /data/node.json ]; then
+          /usr/local/bin/toychain -data /data/node.json -difficulty 1 -retarget-interval 0 init -force
+        fi
+        exec /usr/local/bin/toychain -data /data/node.json -difficulty 1 -retarget-interval 0 node \
+          -addr 0.0.0.0:8081 \
+          -advertise http://node1:8081 \
+          -peers http://node2:8082,http://node3:8083
+    ports:
+      - "8081:8081"
+    volumes:
+      - node1-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8081/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+  node2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: toychain-node2
+    command:
+      - /bin/sh
+      - -c
+      - |
+        if [ ! -f /data/node.json ]; then
+          /usr/local/bin/toychain -data /data/node.json -difficulty 1 -retarget-interval 0 init -force
+        fi
+        exec /usr/local/bin/toychain -data /data/node.json -difficulty 1 -retarget-interval 0 node \
+          -addr 0.0.0.0:8082 \
+          -advertise http://node2:8082 \
+          -peers http://node1:8081,http://node3:8083
+    ports:
+      - "8082:8082"
+    volumes:
+      - node2-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8082/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+  node3:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: toychain-node3
+    command:
+      - /bin/sh
+      - -c
+      - |
+        if [ ! -f /data/node.json ]; then
+          /usr/local/bin/toychain -data /data/node.json -difficulty 1 -retarget-interval 0 init -force
+        fi
+        exec /usr/local/bin/toychain -data /data/node.json -difficulty 1 -retarget-interval 0 node \
+          -addr 0.0.0.0:8083 \
+          -advertise http://node3:8083 \
+          -peers http://node1:8081,http://node2:8082
+    ports:
+      - "8083:8083"
+    volumes:
+      - node3-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8083/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+volumes:
+  node1-data:
+  node2-data:
+  node3-data:
